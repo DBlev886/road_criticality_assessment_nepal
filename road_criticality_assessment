@@ -1,0 +1,151 @@
+import sys
+import osmnx as ox
+import networkx as nx
+import geopandas as gpd
+import rasterio as rio
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as colors
+import pandas as pd
+from pyproj import CRS
+import contextily as ctx
+from osgeo import gdal
+import numpy as np
+from shapely.geometry import Point, MultiPoint, MultiLineString, MultiPolygon
+from shapely import speedups
+speedups.enabled
+
+#%matplotlib inline
+ox.__version__
+
+
+########## get data from OSM and define aoi
+# define study area, fetch OSM street network data, project and plot it
+study_area = (["Beni, Nepal", "Jaljala, Nepal"])
+network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500, simplify=False)
+#fig, ax = ox.plot_graph(network, node_color="r")
+
+# Get place boundary related to the place name as a geodataframe
+## buffer distance important to connect roads on the outside and to allow connectivitiy between administrative units, where roads usually tend to be
+AOI = ox.geocode_to_gdf(study_area, buffer_dist=2000)
+AOI = AOI.to_crs(epsg=32644)
+AOI.to_file("AOI.shp")
+#AOI.plot()
+
+########## simplify network topology and consolidate intersections #### check how this step can be avoided by setting simplify=True in line 27
+# show which nodes we'd remove if we simplify it (yellow)
+nc = ["r" if ox.simplification._is_endpoint(network, node) else "y" for node in network.nodes()]
+#fig, ax = ox.plot_graph(network, node_color=nc)
+# simplify the network
+network_simpl = ox.simplify_graph(network)
+# plot the simplified network and highlight any self-loop edges
+loops = [edge[0] for edge in nx.selfloop_edges(network_simpl)]
+nc = ["r" if node in loops else "y" for node in network_simpl.nodes()]
+#fig, ax = ox.plot_graph(network_simpl, node_color=nc)
+# turn off strict mode and see what nodes we'd remove
+nc = ["r" if ox.simplification._is_endpoint(network, node, strict=False) else "y" for node in network.nodes()]
+#fig, ax = ox.plot_graph(network, node_color=nc)
+# simplify network with strict mode turned off
+network_simpl_strict = ox.simplify_graph(network.copy(), strict=False)
+#fig, ax = ox.plot_graph(network_simpl_strict, node_color="r")
+
+# Retrieve nodes and edges from graph
+edges = ox.graph_to_gdfs(network_simpl_strict, nodes=True, edges=True)
+
+
+
+###################### ELEVATION GRADES ### not sure if this is useful in the end
+########## node elevations and edge grades
+# add node elevations from a single raster file
+# some nodes will be null because the single file does not cover the graph's extents
+raster_path = "ASTGTMV003_N28E083_dem.tif"
+network_simpl_strict = ox.elevation.add_node_elevations_raster(network, raster_path, cpus=1)
+# add edge grades and their absolute values
+network_simpl_strict = ox.elevation.add_edge_grades(network_simpl_strict, add_absolute=True)
+# plot nodes by elevation and get one color for each node, by elevation, then plot the network
+#nc = ox.plot.get_node_colors_by_attr(network_simpl_strict, "elevation", cmap="plasma")
+#fig, ax = ox.plot_graph(network_simpl_strict, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
+
+# Project the data
+network_proj = ox.project_graph(network_simpl_strict)
+#fig, ax = ox.plot_graph(network, bgcolor='k', node_size=30, node_color='#999999', node_edgecolor='none', node_zorder=2,
+#                        edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
+# Get Edges and Nodes
+nodes_proj, edges_proj = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+
+###################### CENTRALITY INDICES
+# node closeness centrality
+node_centrality = nx.closeness_centrality(network_simpl_strict)
+# plot it
+df = pd.DataFrame(data=pd.Series(node_centrality).sort_values(), columns=['cc'])
+df['colors'] = ox.plot.get_colors(n=len(df), cmap='inferno', start=0.2)
+df = df.reindex(network_simpl_strict.nodes())
+nc = df['colors'].tolist()
+fig, ax = ox.plot_graph(network_simpl_strict, bgcolor='k', node_size=30, node_color=nc, node_edgecolor='none', node_zorder=2,
+                        edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
+
+# edge closeness centrality: convert graph to a line graph so edges become nodes and vice versa
+edge_centrality = nx.closeness_centrality(nx.line_graph(network_simpl_strict))
+# list of edge values for the orginal graph
+ev = [edge_centrality[edge + (0,)] for edge in network_simpl_strict.edges()]
+
+# color scale converted to list of colors for graph edges
+norm = colors.Normalize(vmin=min(ev)*0.8, vmax=max(ev))
+cmap = cm.ScalarMappable(norm=norm, cmap=cm.inferno)
+ec = [cmap.to_rgba(cl) for cl in ev]
+
+# color the edges in the original graph with closeness centralities in the line graph
+fig, ax = ox.plot_graph(network_simpl_strict, bgcolor='k', node_size=0, node_color='w', node_edgecolor='gray', node_zorder=2,
+                        edge_color=ec, edge_linewidth=1.5, edge_alpha=1)
+
+
+
+###################### BUFFER EDGES
+# buffer edges
+buffered = edges_proj.to_crs(epsg=32644)
+buffered = edges_proj.buffer(100, cap_style=2)
+buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
+buffered = buffered.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
+#buffered.plot()
+outfp = 'C:/Users/Danny/Beni/edges.shp'
+buffered.to_file(outfp)
+
+
+###################### POPULATION COUNT ### I create centroids from the raster to later assign them to the edges...I'm sure there are simpler ways to do so
+########## define mask and mask raster data ##### code too complicated
+ds = gdal.Open("world_pop_npl_ppp_2020_UNadj.tif")
+array = ds.GetRasterBand(1).ReadAsArray()
+plt.imshow(array)
+plt.colorbar()
+print(ds.GetGeoTransform())
+print(ds.GetProjection())
+
+dsClip = gdal.Warp("world_pop_npl_ppp_2020_UNadj_clipped.tif", ds, cutlineDSName = "AOI.shp",
+                   cropToCutline = True, dstNodata = np.nan, dstSRS='EPSG:32644')
+array = dsClip.GetRasterBand(1).ReadAsArray()
+plt.imshow(array)
+plt.colorbar()
+
+with rio.open('C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif') as dataset:
+    val = dataset.read(1) # band 1
+    no_data=dataset.nodata
+    geometry = [Point(dataset.xy(x,y)[0],dataset.xy(x,y)[1]) for x,y in np.ndindex(val.shape) if val[x,y] != no_data]
+    v = [val[x,y] for x,y in np.ndindex(val.shape) if val[x,y] != no_data]
+    df = gpd.GeoDataFrame({'geometry':geometry,'data':v})
+    if buffered.crs != df.crs:
+        df = df.set_crs(buffered.crs, inplace=True)
+
+df = df.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
+df.to_file("population_points.shp")
+
+#### boost spatial query with R-Tree instead of spatial join
+spatial_index = df.sindex
+possible_matches_index = list(spatial_index.intersection(buffered.bounds))
+possible_matches = df.iloc[possible_matches_index]
+precise_matches = possible_matches[possible_matches.intersects(buffered)]
+'''
+buffered_with_df = gpd.sjoin(df, buffered, how='inner', op='within', lsuffix='left', rsuffix='right')
+buffered_with_df.to_file("population_edges.shp")
+
+stats_buffered = buffered_with_df.groupby(by="index_right1").agg('mean')
+'''
