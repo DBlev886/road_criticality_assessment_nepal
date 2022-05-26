@@ -3,6 +3,7 @@ import osmnx as ox
 import networkx as nx
 import geopandas as gpd
 import rasterio as rio
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as colors
@@ -13,7 +14,6 @@ from osgeo import gdal
 import numpy as np
 from shapely.geometry import Point, MultiPoint, MultiLineString, MultiPolygon
 from shapely import speedups
-speedups.enabled
 
 #%matplotlib inline
 ox.__version__
@@ -27,23 +27,53 @@ network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500,
 
 # Project the data
 network_proj = ox.project_graph(network)
+network_gdf = gpd.GeoDataFrame(network_proj, crs="EPSG:32644")
 #fig, ax = ox.plot_graph(network, bgcolor='k', node_size=30, node_color='#999999', node_edgecolor='none', node_zorder=2,
 #                        edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
+network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+#network_edges = network_edges.dropna()
 
+centrality = nx.closeness_centrality(nx.line_graph(network_proj))
+network_edges['centrality'] = centrality.values()
+
+'''quant_one = network_edges['centrality'].quantile(.2)
+quant_two = network_edges['centrality'].quantile(.4)
+quant_three = network_edges['centrality'].quantile(.6)
+quant_four = network_edges['centrality'].quantile(.8)
+quant_five = network_edges['centrality'].quantile(1)
+
+quantile_frame = network_edges['centrality'].quantile(q=[0.2, 0.4, 0.6, 0.8])'''
+network_edges['centr_score'] = pd.qcut(network_edges['centrality'], q=5, labels=[1,2,3,4,5])
+
+#df['quartile'] = quantile_ranks
+
+
+#if network_edges['centrality'].quantile() <= quant_one:
+#    network_edges['centr_score'] = 1 
+'''elif network_edges['centrality'].quantile() > quant_one:
+    if network_edges['centrality'].quantile() <= quant_two:
+        network_edges['centr_score'] = 2
+elif network_edges['centrality'].quantile() > quant_two:
+    if network_edges['centrality'].quantile() <= quant_three:
+        network_edges['centr_score'] = 3
+elif network_edges['centrality'].quantile() > quant_three:
+    if network_edges['centrality'].quantile() <= quant_four:
+        network_edges['centr_score'] = 4
+else:
+    network_edges['centr_score'] = 5
+'''
 '''
 ###################### ELEVATION GRADES ### not sure if this is useful eventually
 ########## node elevations and edge grades
 # add node elevations from a single raster file
-# some nodes will be null because the single file does not cover the graph's extents
 raster_path = "ASTGTMV003_N28E083_dem.tif"
-network_simpl_strict = ox.elevation.add_node_elevations_raster(network, raster_path, cpus=1)
+network_elev = ox.elevation.add_node_elevations_raster(network_proj, raster_path)
+assert not np.isnan(np.array(network_elev.nodes(data="elevation"))[:, 1]).any()
 # add edge grades and their absolute values
-network_simpl_strict = ox.elevation.add_edge_grades(network, add_absolute=True)
+network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
 # plot nodes by elevation and get one color for each node, by elevation, then plot the network
-#nc = ox.plot.get_node_colors_by_attr(network_simpl_strict, "elevation", cmap="plasma")
-#fig, ax = ox.plot_graph(network_simpl_strict, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
-'''
-
+nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
+fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 
 ###################### CENTRALITY INDICES
 # node closeness centrality
@@ -56,10 +86,11 @@ nc = df['colors'].tolist()
 fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=30, node_color=nc, node_edgecolor='none', node_zorder=2,
                         edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
 
+
 # edge closeness centrality: convert graph to a line graph so edges become nodes and vice versa
-edge_centrality = nx.closeness_centrality(nx.line_graph(network_proj))
+
 # list of edge values for the orginal graph
-ev = [edge_centrality[edge + (0,)] for edge in network_proj.edges()]
+#ev = [network_gdf['centrality'][edge + (0,)] for edge in network_proj.edges()]
 
 # color scale converted to list of colors for graph edges
 norm = colors.Normalize(vmin=min(ev)*0.8, vmax=max(ev))
@@ -70,10 +101,12 @@ ec = [cmap.to_rgba(cl) for cl in ev]
 fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=0, node_color='w', node_edgecolor='gray', node_zorder=2,
                         edge_color=ec, edge_linewidth=1.5, edge_alpha=1)
 
-
 ###################### BUFFER EDGES
-# Retrieve nodes and edges from graph
-nodes_proj, edges_proj = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+# Retrieve nodes and edges from graph and add to old file
+network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+#edge_centrality1 = gpd.GeoDataFrame(edge_centrality, crs="EPSG:32644")
+
+
 # buffer edges
 buffered = edges_proj.to_crs(epsg=32644)
 buffered = edges_proj.buffer(100, cap_style=2)
@@ -82,7 +115,6 @@ buffered = buffered.dropna(axis=0, how="any", thresh=None, subset=None, inplace=
 #buffered.plot()
 outfp = 'C:/Users/Danny/Beni/edges.shp'
 buffered.to_file(outfp)
-
 
 
 # Get place boundary related to the place name as a geodataframe
@@ -120,7 +152,8 @@ with rio.open('C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif') as
 
 df = df.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
 df.to_file("population_points.shp")
-"""
+
+
 #### boost spatial query with R-Tree instead of spatial join
 spatial_index = df.sindex
 possible_matches_index = list(spatial_index.intersection(buffered.bounds))
@@ -131,4 +164,5 @@ buffered_with_df = gpd.sjoin(df, buffered, how='inner', op='within', lsuffix='le
 buffered_with_df.to_file("population_edges.shp")
 
 stats_buffered = buffered_with_df.groupby(by="index_right1").agg('mean')
-"""
+
+'''
