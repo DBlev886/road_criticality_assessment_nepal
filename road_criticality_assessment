@@ -3,6 +3,9 @@ import osmnx as ox
 import networkx as nx
 import geopandas as gpd
 import rasterio as rio
+from rasterio.plot import show
+from rasterio.plot import show_hist
+import rasterstats
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -14,9 +17,6 @@ from osgeo import gdal
 import numpy as np
 from shapely.geometry import Point, MultiPoint, MultiLineString, MultiPolygon
 from shapely import speedups
-
-#%matplotlib inline
-ox.__version__
 
 
 ########## get data from OSM and define aoi
@@ -33,35 +33,82 @@ network_gdf = gpd.GeoDataFrame(network_proj, crs="EPSG:32644")
 network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
 #network_edges = network_edges.dropna()
 
+############ get Centrality values and assign scores
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
 network_edges['centrality'] = centrality.values()
-
-'''quant_one = network_edges['centrality'].quantile(.2)
-quant_two = network_edges['centrality'].quantile(.4)
-quant_three = network_edges['centrality'].quantile(.6)
-quant_four = network_edges['centrality'].quantile(.8)
-quant_five = network_edges['centrality'].quantile(1)
-
-quantile_frame = network_edges['centrality'].quantile(q=[0.2, 0.4, 0.6, 0.8])'''
+# qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
 network_edges['centr_score'] = pd.qcut(network_edges['centrality'], q=5, labels=[1,2,3,4,5])
 
-#df['quartile'] = quantile_ranks
+# Get place boundary related to the place name as a geodataframe
+## buffer distance important to connect roads on the outside and to allow connectivitiy between administrative units, where roads usually tend to be
+AOI = ox.geocode_to_gdf(study_area, buffer_dist=2000)
+AOI = AOI.to_crs(epsg=32644)
+AOI = AOI.dissolve()
+
+###################### BUFFER EDGES
+# buffer edges
+buffered = network_edges.buffer(100, cap_style=2)
+buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
+#buffered = buffered.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
+#buffered.plot()
+
+###################### POPULATION COUNT
+########## define mask and mask raster data ##### code too complicated and output has to be changed for automatization
+#ds = gdal.Open("world_pop_npl_ppp_2020_UNadj.tif")
+#array = ds.GetRasterBand(1).ReadAsArray()
+
+filepath = r"C:\Users\Danny\Beni\world_pop_npl_ppp_2020_UNadj.tif"
+
+# Open the file:
+pop_raster = gdal.Open(filepath)
+
+# Check type of the variable 'raster'
+type(pop_raster)
+
+#plt.imshow(array)
+#plt.colorbar()
+#print(ds.GetGeoTransform())
+#print(ds.GetProjection())
+
+# clip population raster with AOI
+dsClip = gdal.Warp("C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif", pop_raster, cutlineDSName = AOI,
+                   cropToCutline = True, dstNodata = np.nan, dstSRS='EPSG:32644')
+#array = dsClip.GetRasterBand(1).ReadAsArray()
+#plt.imshow(array)
+#plt.colorbar()
+
+# read clipped population raster and assign values to numpy nd array
+pop_count =  rio.open("C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif")
+pop_count_arrey = pop_count.read(1)
+
+affine = pop_count.transform
+
+# calculating zonal statistics
+pop_mean = rasterstats.zonal_stats(buffered, pop_count_arrey, affine = affine,
+                                            stats = ['mean'],
+                                            geojson_out = True)
+
+# extract average population data from list
+pop_mean_list = []
+i = 0
+
+while i < len(pop_mean):
+    pop_mean_list.append(pop_mean[i]['properties'])
+    i = i + 1
+
+# transfer information from list to DataFrame
+new_list = pd.DataFrame(pop_mean_list)
+#### Value is in new_list but cannot be transfered to network_edges for some reason
+network_edges['pop_mean'].columns=new_list['mean']
+#network_edges['pop_mean'] = new_list['mean']
+
+#while i < len(network_edges):
+#    network_edges['pop_mean'].append(new_list[i]['mean'])
+#    i = i + 1
+#network_edges['pop_mean']
+network_edges
 
 
-#if network_edges['centrality'].quantile() <= quant_one:
-#    network_edges['centr_score'] = 1 
-'''elif network_edges['centrality'].quantile() > quant_one:
-    if network_edges['centrality'].quantile() <= quant_two:
-        network_edges['centr_score'] = 2
-elif network_edges['centrality'].quantile() > quant_two:
-    if network_edges['centrality'].quantile() <= quant_three:
-        network_edges['centr_score'] = 3
-elif network_edges['centrality'].quantile() > quant_three:
-    if network_edges['centrality'].quantile() <= quant_four:
-        network_edges['centr_score'] = 4
-else:
-    network_edges['centr_score'] = 5
-'''
 '''
 ###################### ELEVATION GRADES ### not sure if this is useful eventually
 ########## node elevations and edge grades
@@ -101,68 +148,6 @@ ec = [cmap.to_rgba(cl) for cl in ev]
 fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=0, node_color='w', node_edgecolor='gray', node_zorder=2,
                         edge_color=ec, edge_linewidth=1.5, edge_alpha=1)
 
-###################### BUFFER EDGES
-# Retrieve nodes and edges from graph and add to old file
-network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
-#edge_centrality1 = gpd.GeoDataFrame(edge_centrality, crs="EPSG:32644")
-
-
-# buffer edges
-buffered = edges_proj.to_crs(epsg=32644)
-buffered = edges_proj.buffer(100, cap_style=2)
-buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
-buffered = buffered.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
-#buffered.plot()
-outfp = 'C:/Users/Danny/Beni/edges.shp'
-buffered.to_file(outfp)
-
-
-# Get place boundary related to the place name as a geodataframe
-## buffer distance important to connect roads on the outside and to allow connectivitiy between administrative units, where roads usually tend to be
-AOI = ox.geocode_to_gdf(study_area, buffer_dist=2000)
-AOI = AOI.to_crs(epsg=32644)
-AOI.to_file("AOI.shp")
-#AOI.plot()
-
-
-###################### POPULATION COUNT
-########## define mask and mask raster data ##### code too complicated
-ds = gdal.Open("world_pop_npl_ppp_2020_UNadj.tif")
-#array = ds.GetRasterBand(1).ReadAsArray()
-#plt.imshow(array)
-#plt.colorbar()
-#print(ds.GetGeoTransform())
-#print(ds.GetProjection())
-
-dsClip = gdal.Warp("world_pop_npl_ppp_2020_UNadj_clipped.tif", ds, cutlineDSName = "AOI.shp",
-                   cropToCutline = True, dstNodata = np.nan, dstSRS='EPSG:32644')
-#array = dsClip.GetRasterBand(1).ReadAsArray()
-#plt.imshow(array)
-#plt.colorbar()
-
-
-with rio.open('C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif') as dataset:
-    val = dataset.read(1) # band 1
-    no_data=dataset.nodata
-    geometry = [Point(dataset.xy(x,y)[0],dataset.xy(x,y)[1]) for x,y in np.ndindex(val.shape) if val[x,y] != no_data]
-    v = [val[x,y] for x,y in np.ndindex(val.shape) if val[x,y] != no_data]
-    df = gpd.GeoDataFrame({'geometry':geometry,'data':v})
-    if buffered.crs != df.crs:
-        df = df.set_crs(buffered.crs, inplace=True)
-
-df = df.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
-df.to_file("population_points.shp")
-
-
-#### boost spatial query with R-Tree instead of spatial join
-spatial_index = df.sindex
-possible_matches_index = list(spatial_index.intersection(buffered.bounds))
-possible_matches = df.iloc[possible_matches_index]
-precise_matches = possible_matches[possible_matches.intersects(buffered)]
-
-buffered_with_df = gpd.sjoin(df, buffered, how='inner', op='within', lsuffix='left', rsuffix='right')
-buffered_with_df.to_file("population_edges.shp")
-
-stats_buffered = buffered_with_df.groupby(by="index_right1").agg('mean')
+#### boost spatial query with R-Tree instead of spatial join ???
 
 '''
