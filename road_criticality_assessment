@@ -1,90 +1,80 @@
-import sys
+# -*- coding: utf-8 -*-
+"""
+Created on Sun May  8 12:04:30 2022
+
+@author: Danny
+"""
+
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
 import rasterio as rio
-from rasterio.plot import show
-from rasterio.plot import show_hist
 import rasterstats
+import pandas as pd
+from pyproj import CRS
+from osgeo import gdal
+import numpy as np
+from shapely import speedups
+speedups.enabled
+'''
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as colors
-import pandas as pd
-from pyproj import CRS
-import contextily as ctx
-from osgeo import gdal
-import numpy as np
-from shapely.geometry import Point, MultiPoint, MultiLineString, MultiPolygon
-from shapely import speedups
-
+from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon
+import fiona
+from rtree import index
+'''
 
 ########## get data from OSM and define aoi
 # define study area, fetch OSM street network data, project and plot it + simplify network topology and consolidate intersections
+# use custom_filter instead of network_type for specific road types or utility lines
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])
 network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500, clean_periphery=True)
-#fig, ax = ox.plot_graph(network, node_color="r")
 
-# Project the data
-network_proj = ox.project_graph(network)
-network_gdf = gpd.GeoDataFrame(network_proj, crs="EPSG:32644")
-#fig, ax = ox.plot_graph(network, bgcolor='k', node_size=30, node_color='#999999', node_edgecolor='none', node_zorder=2,
-#                        edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
-network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
-#network_edges = network_edges.dropna()
-
-############ get Centrality values and assign scores
-centrality = nx.closeness_centrality(nx.line_graph(network_proj))
-network_edges['centrality'] = centrality.values()
-# qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
-network_edges['centr_score'] = pd.qcut(network_edges['centrality'], q=5, labels=[1,2,3,4,5])
-
-# Get place boundary related to the place name as a geodataframe
+# Get place boundary related to the place name as a geodataframe\n",
 ## buffer distance important to connect roads on the outside and to allow connectivitiy between administrative units, where roads usually tend to be
-AOI = ox.geocode_to_gdf(study_area, buffer_dist=2000)
+AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
 AOI = AOI.to_crs(epsg=32644)
 AOI = AOI.dissolve()
 
-###################### BUFFER EDGES
-# buffer edges
-buffered = network_edges.buffer(100, cap_style=2)
-buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
-#buffered = buffered.dropna(axis=0, how="any", thresh=None, subset=None, inplace=False)
-#buffered.plot()
+# Project the data
+network_proj = ox.project_graph(network)
+network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+network_nodes = network_nodes.to_crs(CRS(AOI.crs))
+network_edges = network_edges.to_crs(CRS(AOI.crs))
+#network_edges = network_edges.dropna()
+
+# normalize centrality values to summarize them with population later to create quantiles
+centrality = nx.closeness_centrality(nx.line_graph(network_proj))
+network_edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
+network_edges['normalized_centrality'] = (network_edges['centrality']-network_edges['centrality'].min())/(network_edges['centrality'].max()-network_edges['centrality'].min())
+
 
 ###################### POPULATION COUNT
-########## define mask and mask raster data ##### code too complicated and output has to be changed for automatization
-#ds = gdal.Open("world_pop_npl_ppp_2020_UNadj.tif")
+########## define mask and mask raster data ##### code too complicated
+ds = gdal.Open("world_pop_npl_ppp_2020_UNadj.tif")
 #array = ds.GetRasterBand(1).ReadAsArray()
-
-filepath = r"C:\Users\Danny\Beni\world_pop_npl_ppp_2020_UNadj.tif"
-
-# Open the file:
-pop_raster = gdal.Open(filepath)
-
-# Check type of the variable 'raster'
-type(pop_raster)
-
 #plt.imshow(array)
 #plt.colorbar()
 #print(ds.GetGeoTransform())
 #print(ds.GetProjection())
 
 # clip population raster with AOI
-dsClip = gdal.Warp("C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif", pop_raster, cutlineDSName = AOI,
+dsClip = gdal.Warp("world_pop_npl_ppp_2020_UNadj_clipped.tif", ds, cutlineDSName = AOI,
                    cropToCutline = True, dstNodata = np.nan, dstSRS='EPSG:32644')
 #array = dsClip.GetRasterBand(1).ReadAsArray()
 #plt.imshow(array)
 #plt.colorbar()
 
 # read clipped population raster and assign values to numpy nd array
-pop_count =  rio.open("C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif")
+pop_count =  rio.open('C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif')
 pop_count_arrey = pop_count.read(1)
 
 affine = pop_count.transform
 
 # calculating zonal statistics
-pop_mean = rasterstats.zonal_stats(buffered, pop_count_arrey, affine = affine,
+pop_mean = rasterstats.zonal_stats(network_edges, pop_count_arrey, affine = affine,
                                             stats = ['mean'],
                                             geojson_out = True)
 
@@ -96,32 +86,109 @@ while i < len(pop_mean):
     pop_mean_list.append(pop_mean[i]['properties'])
     i = i + 1
 
-# transfer information from list to DataFrame
-new_list = pd.DataFrame(pop_mean_list)
-#### Value is in new_list but cannot be transfered to network_edges for some reason
-network_edges['pop_mean'].columns=new_list['mean']
-#network_edges['pop_mean'] = new_list['mean']
+# transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
+pop_mean = pd.DataFrame(pop_mean_list)
+pop_mean = pop_mean.set_index(network_edges.index)
+network_edges['pop_mean'] = pop_mean['mean']
+network_edges['normalized_pop'] = (network_edges['pop_mean']-network_edges['pop_mean'].min())/(network_edges['pop_mean'].max()-network_edges['pop_mean'].min())
+network_edges['strategic_importance_quantile'] = network_edges['normalized_centrality'] + network_edges['normalized_pop']
 
-#while i < len(network_edges):
-#    network_edges['pop_mean'].append(new_list[i]['mean'])
-#    i = i + 1
-#network_edges['pop_mean']
-network_edges
+# qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
+network_edges['strategic_importance_score'] = pd.qcut(network_edges['strategic_importance_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+
+network_edges.plot('normalized_centrality', label='centrality', cmap='RdYlBu_r', legend=True)
+network_edges.plot('normalized_pop', label='population', cmap='RdYlBu_r', legend=True)
+network_edges.plot('strategic_importance_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
+
+#network_edges = network_edges.reindex(columns=['strategic_importance'])
+#network_edges.plot(column='strategic_importance')
+#outfp = 'C:/Users/Danny/Beni/edges_strategic.shp'
+#network_edges.to_file(outfp)
+
+
+# retrieve buildings
+tags = {'building': True}
+buildings = ox.geometries_from_place(study_area, tags)
+buildings = buildings.to_crs(CRS(AOI.crs))
+
+'''
+fig, ax = plt.subplots(figsize=(12,8))
+# Plot edges and nodes
+network_edges.plot(ax=ax, linewidth=0.75, color='gray')
+network_nodes.plot(ax=ax, markersize=2, color='gray')
+# Add buildings
+ax = buildings.plot(ax=ax, facecolor='red', alpha=0.7)
+# Add basemap
+ctx.add_basemap(ax, crs=buildings.crs, source=ctx.providers.CartoDB.Positron)
+'''
+
+###################### BUFFER EDGES
+# buffer edges
+buffered = network_edges.buffer(100, cap_style=2)
+buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
+#buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
+#buffered.plot()
+
+
+#ax = buffered.plot(color='red', edgecolor='black', alpha=0.5)
+#ax = buildings.plot(ax=ax, color='yellow', markersize=1, alpha=0.5)
+
+# convert building polygons to points in lat, lon format and convert to gdf
+building_centroids = buildings.centroid
+building_centroids = gpd.GeoDataFrame(geometry=gpd.GeoSeries(building_centroids))
+building_centroids = building_centroids.to_crs(AOI.crs)
+
+building_centroids['x'] = building_centroids.geometry.apply(lambda x: x.x)
+building_centroids['y'] = building_centroids.geometry.apply(lambda x: x.y)
+
+#bounds = list(buffered.bounds.values[1])
+#sindex = building_centroids.sindex
+
+
+def intersect_using_spatial_index(building_centroids, buffered):
+    """
+    Conduct spatial intersection using spatial index for candidates GeoDataFrame to make queries faster.
+    Note, with this function, you can have multiple Polygons in the 'intersecting_gdf' and it will return all the points
+    intersect with ANY of those geometries.
+    """
+    source_sindex = building_centroids.sindex
+    possible_matches_index = []
+
+    # 'itertuples()' function is a faster version of 'iterrows()'
+    for other in buffered.itertuples():
+        bounds = other.geometry.bounds
+        c = list(source_sindex.intersection(bounds))
+        possible_matches_index += c
+
+    # Get unique candidates
+    unique_candidate_matches = list(set(possible_matches_index))
+    possible_matches = building_centroids.iloc[unique_candidate_matches]
+
+    # Conduct the actual intersect
+    result = possible_matches.loc[possible_matches.intersects(buffered.unary_union)]
+    return result
+
+
+# Count intersections by postal code area
+buildings_cnt = gpd.sjoin(buffered, building_centroids).groupby('key').size().reset_index()
+
+buildings_cnt = buildings_cnt.rename(columns={0: 'buildings_cnt'})
+buffered['buildings'] = buffered.merge(buildings_cnt, on='key')
 
 
 '''
-###################### ELEVATION GRADES ### not sure if this is useful eventually
-########## node elevations and edge grades
-# add node elevations from a single raster file
-raster_path = "ASTGTMV003_N28E083_dem.tif"
-network_elev = ox.elevation.add_node_elevations_raster(network_proj, raster_path)
-assert not np.isnan(np.array(network_elev.nodes(data="elevation"))[:, 1]).any()
-# add edge grades and their absolute values
-network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
-# plot nodes by elevation and get one color for each node, by elevation, then plot the network
-nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
-fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
+def apply_tariff_iterrows(building_centroids):
+    energy_cost_list = []
+    for index, row in building_centroids.iterrows():
+        geometry = buffered['geometry'].iloc[1]
+        sindex = building_centroids.sindex
+        possible_matches_index = list(sindex.intersection(geometry.bounds))
+        possible_matches = building_centroids.iloc[possible_matches_index]
+        precise_matches = possible_matches[possible_matches.intersects(geometry)]
+        energy_cost_list << precise matches
+'''
 
+'''
 ###################### CENTRALITY INDICES
 # node closeness centrality
 node_centrality = nx.closeness_centrality(network_proj)
@@ -132,7 +199,6 @@ df = df.reindex(network_proj.nodes())
 nc = df['colors'].tolist()
 fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=30, node_color=nc, node_edgecolor='none', node_zorder=2,
                         edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
-
 
 # edge closeness centrality: convert graph to a line graph so edges become nodes and vice versa
 
@@ -148,6 +214,16 @@ ec = [cmap.to_rgba(cl) for cl in ev]
 fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=0, node_color='w', node_edgecolor='gray', node_zorder=2,
                         edge_color=ec, edge_linewidth=1.5, edge_alpha=1)
 
-#### boost spatial query with R-Tree instead of spatial join ???
 
+###################### ELEVATION GRADES ### not sure if this is useful eventually
+########## node elevations and edge grades
+# add node elevations from a single raster file
+raster_path = "ASTGTMV003_N28E083_dem.tif"
+network_elev = ox.elevation.add_node_elevations_raster(network_proj, raster_path)
+assert not np.isnan(np.array(network_elev.nodes(data="elevation"))[:, 1]).any()
+# add edge grades and their absolute values
+network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
+# plot nodes by elevation and get one color for each node, by elevation, then plot the network
+nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
+fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
