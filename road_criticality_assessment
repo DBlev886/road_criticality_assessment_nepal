@@ -81,51 +81,38 @@ def MultiCut(line, pieces):
     lines_to_cut = [] #The lines to cut are add to this list
 
 #We must ensure that pieces are higher than 2
-if pieces == 1: #If pieces are 1 the result is the same line
-    lines_result.append(line) 
-elif pieces == 2: #If pieces are 2 the result is the line cut by the middle point
-    distance = (line.length)/pieces
-    lines_result.append(cut(line, distance)[0])
-    lines_result.append(cut(line, distance)[1])
-else: # If pieces is more than 3 we star to cut the line in the number of pieces
-    # We use a loop  from the first to the penultimate piece 
-    for i in range(1, pieces): 
-        # The first piece is cut to save the result and the rest of the line
-        if i == 1:
-            distance = (line.length)/pieces #Distance is calculate as the lenght of the line divided by the number of pieces
-            lines_result.append(cut(line, distance)[0]) #We cut the line and save the first part in lines result
-            lines_to_cut = cut(line, distance)[1] #We save the rest of the line in lines to cut in order to continue with the split
+    if pieces == 1: #If pieces are 1 the result is the same line
+        lines_result.append(line) 
+    elif pieces == 2: #If pieces are 2 the result is the line cut by the middle point
+        distance = (line.length)/pieces
+        lines_result.append(cut(line, distance)[0])
+        lines_result.append(cut(line, distance)[1])
+    else: # If pieces is more than 3 we star to cut the line in the number of pieces
+        # We use a loop  from the first to the penultimate piece 
+        for i in range(1, pieces): 
+            # The first piece is cut to save the result and the rest of the line
+            if i == 1:
+                distance = (line.length)/pieces #Distance is calculate as the lenght of the line divided by the number of pieces
+                lines_result.append(cut(line, distance)[0]) #We cut the line and save the first part in lines result
+                lines_to_cut = cut(line, distance)[1] #We save the rest of the line in lines to cut in order to continue with the split
 
-        #If pieces are equal to pieces minus two we can split the line and 
-        #save only the first part in lines result in order to continue with 
-        #the split
-        if  1 < i <= pieces - 2:
-            distance = (line.length)/pieces
-            lines_result.append(cut(lines_to_cut, distance)[0])
-            lines_to_cut = cut(lines_to_cut, distance)[1]
+            #If pieces are equal to pieces minus two we can split the line and 
+            #save only the first part in lines result in order to continue with 
+            #the split
+            if  1 < i <= pieces - 2:
+                distance = (line.length)/pieces
+                lines_result.append(cut(lines_to_cut, distance)[0])
+                lines_to_cut = cut(lines_to_cut, distance)[1]
 
-        #Finally if pieces are equal to pieces minus 1 we can cut the line 
-        #and save both of the parts in lines result
-        if (i != 1) and (i == pieces-1):
-            distance = (line.length)/pieces
-            lines_result.append(cut(lines_to_cut, distance)[0])
-            lines_result.append(cut(lines_to_cut, distance)[1])
-
+            #Finally if pieces are equal to pieces minus 1 we can cut the line 
+            #and save both of the parts in lines result
+            if (i != 1) and (i == pieces-1):
+                distance = (line.length)/pieces
+                lines_result.append(cut(lines_to_cut, distance)[0])
+                lines_result.append(cut(lines_to_cut, distance)[1])
 return lines_result 
 
 #%%
-
-#test 
-# dasdfsa
-# 
-# 
-# sdadsa
-# sad 
-
-#%%
-
-# dasdas
-
 # normalize centrality values to summarize them with population later to create quantiles
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
 network_edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
