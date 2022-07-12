@@ -112,6 +112,7 @@ def MultiCut(line, pieces):
                 lines_result.append(cut(lines_to_cut, distance)[1])
 return lines_result 
 
+
 #%%
 # normalize centrality values to summarize them with population later to create quantiles
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
