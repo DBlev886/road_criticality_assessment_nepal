@@ -78,6 +78,7 @@ def cut(line, distance):
 #I took the lines (LineString) of the geodataframe 
 network_to_cut = network_edges.dissolve()
 new_network = cut(network_to_cut.geometry, 1000)
+#test
 
 
 #%%
