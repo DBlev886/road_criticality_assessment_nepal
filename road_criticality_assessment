@@ -21,8 +21,12 @@ import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
 from matplotlib import pyplot
 from math import sqrt
+import pycountry
+import inspect
+from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
+import requests
 
-#%%
+#%%%
 '''
 import matplotlib
 
@@ -31,14 +35,29 @@ import matplotlib.colors as colors
 import fiona
 from rtree import index
 '''
+
 #%%
 ########## get data from OSM and define aoi
 # define study area, fetch OSM street network data, project and plot it + simplify network topology and consolidate intersections
 # use custom_filter instead of network_type for specific road types or utility lines
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])
 network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500, clean_periphery=True)
-#%%
+#%%%
+'''
+study_area_str = " ".join(study_area)
+for country in pycountry.countries:
+    if country.name in study_area_str:
+        iso_code = country.alpha_3
 
+
+from wpgpDownload.utils.wpcsv import ISO_LIST
+for iso in ISO_LIST:
+    print(iso)
+
+from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
+dl(ISO='GRC', out_folder='C:/Users/Danny/Desktop/EMMA/IV/Data/Population', prod_name='ccidadminl1')
+'''
+#%%
 # Get place boundary related to the place name as a geodataframe\n",
 ## buffer distance important to connect roads on the outside and to allow connectivitiy between administrative units, where roads usually tend to be
 AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
@@ -57,7 +76,7 @@ fig, ax = plt.subplots(figsize=(12,8))
 network_edges.plot(ax=ax, linewidth=0.75, color='gray')
 network_nodes.plot(ax=ax, markersize=2, color='gray')
 #%%
-
+'''
 def cut(line, distance):
  # Cuts a line in two at a distance from its starting point
     if distance <= 0.0 or distance >= line.length:
@@ -79,8 +98,7 @@ def cut(line, distance):
 network_to_cut = network_edges.dissolve()
 new_network = cut(network_to_cut.geometry, 1000)
 #test
-
-
+'''
 #%%
 # normalize centrality values to summarize them with population later to create quantiles
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
@@ -107,6 +125,45 @@ dsClip = gdal.Warp("world_pop_npl_ppp_2020_UNadj_clipped.tif", ds, cutlineDSName
 # read clipped population raster and assign values to numpy nd array
 pop_count =  rio.open('C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif')
 pop_count_array = pop_count.read(1)
+
+#%%%
+'''
+import os
+import urllib
+
+def get_filename(url):
+    """
+    Parses filename from given url
+    """
+    if url.find('/'):
+        return url.rsplit('/', 1)[1]
+
+# Filepaths
+outdir = r"C:/Users/Danny/Desktop/EMMA/IV/Data/Population"
+
+# File locations
+url_list = ["https://data.worldpop.org/GIS/Population/Global_2000_2020/2020/NPL/npl_ppp_2020_UNadj.tif"]
+
+# Create folder if it does no exist
+if not os.path.exists(outdir):
+    os.makedirs(outdir)
+
+# Download files
+for url in url_list:
+    # Parse filename
+    fname = get_filename(url)
+    outfp = os.path.join(outdir, fname)
+    # Download the file if it does not exist already
+    if not os.path.exists(outfp):
+        print("Downloading", fname)
+        r = urllib.request.urlretrieve(url, outfp)
+
+data_dir = "C:/Users/Danny/Desktop/EMMA/IV/Data/Population/"
+fp = os.path.join(data_dir, "npl_ppp_2020_UNadj.tif")
+
+# Open the file:
+raster = rio.open(fp)
+'''
 
 affine = pop_count.transform
 #%%
@@ -265,4 +322,3 @@ network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
 nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
 fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
-# %%
