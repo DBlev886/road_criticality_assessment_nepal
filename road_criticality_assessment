@@ -139,26 +139,24 @@ for url in url_list:
 
 #%%
 
-with rio.open(fp, mode='r+') as src:
-    #src.crs = AOI.crs
+with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj.tif", mode='r+') as src:
+    src.crs = AOI.crs
+    pyplot.imshow(src.read(1), cmap='pink')
     def getFeatures(gdf):
         """Function to parse features from GeoDataFrame in such a manner that rasterio wants them"""
         import json
         return [json.loads(gdf.to_json())['features'][0]['geometry']]
-    coords = AOI['geometry']
+    coords = AOI['geometry']    ### Error likely here
     clipped_array, clipped_transform = mask(dataset=src, shapes=coords, invert=True)
-
 
     out_meta = src.meta.copy()
     out_meta.update({"driver": "GTiff",
                     "height": clipped_array.shape[1],
                     "width": clipped_array.shape[2],
                     "transform": clipped_transform})
-    out_tif= "C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_20lll20_UNadj_clipped.tif"
+    out_tif= "C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif"
     with rio.open(out_tif, "w", **out_meta) as dest:
-        dest.write(clipped_array)
-
-#%%        
+        dest.write(clipped_array) 
     clipped = rio.open(out_tif)
     fig, ax = plt.subplots(figsize=(8, 6))
     p1 = AOI.plot(color=None,facecolor='none',edgecolor='red',linewidth = 2,ax=ax)
