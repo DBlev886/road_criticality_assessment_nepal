@@ -12,7 +12,6 @@ import rasterio as rio
 import rasterstats
 import pandas as pd
 from pyproj import CRS
-from osgeo import gdal
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely import speedups
@@ -25,6 +24,7 @@ import pycountry
 import inspect
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 import requests
+from rasterio.mask import mask
 
 #%%%
 '''
@@ -63,6 +63,7 @@ dl(ISO='GRC', out_folder='C:/Users/Danny/Desktop/EMMA/IV/Data/Population', prod_
 AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
 AOI = AOI.to_crs(epsg=32644)
 AOI = AOI.dissolve()
+AOI.to_file("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/aoi.shp")
 #%%
 # Project the data
 network_proj = ox.project_graph(network)
@@ -104,30 +105,8 @@ new_network = cut(network_to_cut.geometry, 1000)
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
 network_edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
 network_edges['normalized_centrality'] = (network_edges['centrality']-network_edges['centrality'].min())/(network_edges['centrality'].max()-network_edges['centrality'].min())
-#%%
-
-###################### POPULATION COUNT
-########## define mask and mask raster data ##### code too complicated
-ds = gdal.Open("world_pop_npl_ppp_2020_UNadj.tif")
-#array = ds.GetRasterBand(1).ReadAsArray()
-#plt.imshow(array)
-#plt.colorbar()
-#print(ds.GetGeoTransform())
-#print(ds.GetProjection())
-#%%
-# clip population raster with AOI
-dsClip = gdal.Warp("world_pop_npl_ppp_2020_UNadj_clipped.tif", ds, cutlineDSName = AOI,
-                   cropToCutline = True, dstNodata = np.nan, dstSRS='EPSG:32644')
-#array = dsClip.GetRasterBand(1).ReadAsArray()
-#plt.imshow(array)
-#plt.colorbar()
-#%%
-# read clipped population raster and assign values to numpy nd array
-pop_count =  rio.open('C:/Users/Danny/Beni/world_pop_npl_ppp_2020_UNadj_clipped.tif')
-pop_count_array = pop_count.read(1)
 
 #%%%
-'''
 import os
 import urllib
 
@@ -139,7 +118,7 @@ def get_filename(url):
         return url.rsplit('/', 1)[1]
 
 # Filepaths
-outdir = r"C:/Users/Danny/Desktop/EMMA/IV/Data/Population"
+outdir = r"C:/Users/Danny/Desktop/EMMA/IV/Data/Population/"
 
 # File locations
 url_list = ["https://data.worldpop.org/GIS/Population/Global_2000_2020/2020/NPL/npl_ppp_2020_UNadj.tif"]
@@ -158,14 +137,37 @@ for url in url_list:
         print("Downloading", fname)
         r = urllib.request.urlretrieve(url, outfp)
 
-data_dir = "C:/Users/Danny/Desktop/EMMA/IV/Data/Population/"
-fp = os.path.join(data_dir, "npl_ppp_2020_UNadj.tif")
+#%%
 
-# Open the file:
-raster = rio.open(fp)
-'''
+with rio.open(fp, mode='r+') as src:
+    #src.crs = AOI.crs
+    def getFeatures(gdf):
+        """Function to parse features from GeoDataFrame in such a manner that rasterio wants them"""
+        import json
+        return [json.loads(gdf.to_json())['features'][0]['geometry']]
+    coords = AOI['geometry']
+    clipped_array, clipped_transform = mask(dataset=src, shapes=coords, invert=True)
 
-affine = pop_count.transform
+
+    out_meta = src.meta.copy()
+    out_meta.update({"driver": "GTiff",
+                    "height": clipped_array.shape[1],
+                    "width": clipped_array.shape[2],
+                    "transform": clipped_transform})
+    out_tif= "C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_20lll20_UNadj_clipped.tif"
+    with rio.open(out_tif, "w", **out_meta) as dest:
+        dest.write(clipped_array)
+
+#%%        
+    clipped = rio.open(out_tif)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    p1 = AOI.plot(color=None,facecolor='none',edgecolor='red',linewidth = 2,ax=ax)
+
+#%%
+# read clipped population raster and assign values to numpy nd array
+#pop_count =  rio.open(clipped)
+pop_count_array = clipped.read(1)
+affine = clipped.transform
 #%%
 # calculating zonal statistics
 pop_mean = rasterstats.zonal_stats(network_edges, pop_count_array, affine = affine,
