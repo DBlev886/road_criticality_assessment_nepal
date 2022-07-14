@@ -139,6 +139,7 @@ for url in url_list:
 
 #%%
 
+
 with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj.tif", mode='r+') as src:
     src.crs = AOI.crs
     pyplot.imshow(src.read(1), cmap='pink')
