@@ -2,8 +2,16 @@
 """
 Created on Sun May  8 12:04:30 2022
 
-@author: Danny
+@author: Danny Baldig
+
+
+# = comments on what code does
+### = methodological comment (just for me)
+##### = new sub-chapter
+########## = new chapter
 """
+
+########## IMPORTS
 #%%
 import osmnx as ox
 import networkx as nx
@@ -26,58 +34,32 @@ from wpgpDownload.utils.convenience_functions import download_country_covariates
 import requests
 from rasterio.mask import mask
 
-#%%%
-'''
-import matplotlib
-
-import matplotlib.cm as cm
-import matplotlib.colors as colors
-import fiona
-from rtree import index
-'''
-
 #%%
-########## get data from OSM and define aoi
-# define study area, fetch OSM street network data, project and plot it + simplify network topology and consolidate intersections
-# use custom_filter instead of network_type for specific road types or utility lines
+########## RETRIEVE AND PROCESS OSM-DATA
+# define study area + fetch OSM street network data
+### use custom_filter instead of network_type for specific road types or utility lines
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])
 network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500, clean_periphery=True)
-#%%%
-'''
-study_area_str = " ".join(study_area)
-for country in pycountry.countries:
-    if country.name in study_area_str:
-        iso_code = country.alpha_3
 
-
-from wpgpDownload.utils.wpcsv import ISO_LIST
-for iso in ISO_LIST:
-    print(iso)
-
-from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
-dl(ISO='GRC', out_folder='C:/Users/Danny/Desktop/EMMA/IV/Data/Population', prod_name='ccidadminl1')
-'''
 #%%
-# Get place boundary related to the place name as a geodataframe\n",
-## buffer distance important to connect roads on the outside and to allow connectivitiy between administrative units, where roads usually tend to be
-AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
-AOI = AOI.to_crs(epsg=32644)
-AOI = AOI.dissolve()
-AOI.to_file("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/aoi.shp")
-#%%
-# Project the data
+# project the data
 network_proj = ox.project_graph(network)
 network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
 network_nodes = network_nodes.to_crs(CRS(AOI.crs))
 #network_edges = network_edges.dropna()
+
 #%%
-
-
+'''
+# plot data
 fig, ax = plt.subplots(figsize=(12,8))
 network_edges.plot(ax=ax, linewidth=0.75, color='gray')
 network_nodes.plot(ax=ax, markersize=2, color='gray')
+'''
+
 #%%
 '''
+# cut edges in 1000m segments
+# ERROR: ValueError: The truth value of a Series is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
 def cut(line, distance):
  # Cuts a line in two at a distance from its starting point
     if distance <= 0.0 or distance >= line.length:
@@ -98,15 +80,44 @@ def cut(line, distance):
 #I took the lines (LineString) of the geodataframe 
 network_to_cut = network_edges.dissolve()
 new_network = cut(network_to_cut.geometry, 1000)
-#test
 '''
+
 #%%
-# normalize centrality values to summarize them with population later to create quantiles
+########## ASSIGN STRATEGICAL IMPORTANCE SCORES
+###### ASSIGN CENTRALITY SCORES
+### normalize centrality values to summarize them with population later to create quantiles
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
 network_edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
 network_edges['normalized_centrality'] = (network_edges['centrality']-network_edges['centrality'].min())/(network_edges['centrality'].max()-network_edges['centrality'].min())
 
+##### ADD POPULATION RASTER AND ASSIGN POPULATION SCORES
+#%%
+# define boundaries to mask raster
+### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
+AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
+AOI = AOI.to_crs(epsg=32644)
+AOI = AOI.dissolve()
+AOI.to_file("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/aoi.shp")
+
 #%%%
+'''
+# identify ISO country code to automatically download population raster based on OSM-input
+study_area_str = " ".join(study_area)
+for country in pycountry.countries:
+    if country.name in study_area_str:
+        iso_code = country.alpha_3
+
+
+from wpgpDownload.utils.wpcsv import ISO_LIST
+for iso in ISO_LIST:
+    print(iso)
+
+from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
+dl(ISO='GRC', out_folder='C:/Users/Danny/Desktop/EMMA/IV/Data/Population', prod_name='ccidadminl1')
+'''
+
+#%%%
+# manually download raster (for now since API doesn't work)
 import os
 import urllib
 
@@ -138,8 +149,8 @@ for url in url_list:
         r = urllib.request.urlretrieve(url, outfp)
 
 #%%
-
-
+# open downloaded raster and mask with AOI boundary
+# ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
 with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj.tif", mode='r+') as src:
     src.crs = AOI.crs
     pyplot.imshow(src.read(1), cmap='pink')
@@ -147,7 +158,7 @@ with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj
         """Function to parse features from GeoDataFrame in such a manner that rasterio wants them"""
         import json
         return [json.loads(gdf.to_json())['features'][0]['geometry']]
-    coords = AOI['geometry']    ### Error likely here
+    coords = AOI['geometry']
     clipped_array, clipped_transform = mask(dataset=src, shapes=coords, invert=True)
 
     out_meta = src.meta.copy()
