@@ -19,6 +19,7 @@ import geopandas as gpd
 import rasterio as rio
 import rasterstats
 import pandas as pd
+from shapely.ops import linemerge
 from pyproj import CRS
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,6 +27,7 @@ from shapely import speedups
 speedups.enabled
 import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
+from shapely.geometry import LineString, shape
 from matplotlib import pyplot
 from math import sqrt
 import pycountry
@@ -45,7 +47,7 @@ network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500,
 # project the data
 network_proj = ox.project_graph(network)
 network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
-network_nodes = network_nodes.to_crs(CRS(AOI.crs))
+network_nodes = network_nodes.to_crs(epsg=32644)
 #network_edges = network_edges.dropna()
 
 #%%
@@ -57,30 +59,32 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
-'''
+
 # cut edges in 1000m segments
 # ERROR: ValueError: The truth value of a Series is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+# ERROR: GeometryTypeError: Unknown geometry type: featurecollection
 def cut(line, distance):
- # Cuts a line in two at a distance from its starting point
-    if distance <= 0.0 or distance >= line.length:
+# Cuts a line in two at a distance from its starting point
+    if (distance <= 0.0) or (distance >= line.length).bool():
         return [LineString(line)]
     coords = list(line.coords)
     for i, p in enumerate(coords):
         pd = line.project(Point(p))
         if pd == distance:
             return [
-                LineString(coords[:i+1]),
-                LineString(coords[i:])]
+                    LineString(coords[:i+1]),
+                    LineString(coords[i:])]
         if pd > distance:
             cp = line.interpolate(distance)
             return [
-                LineString(coords[:i] + [(cp.x, cp.y)]),
-                LineString([(cp.x, cp.y)] + coords[i:])]
+                    LineString(coords[:i] + [(cp.x, cp.y)]),
+                    LineString([(cp.x, cp.y)] + coords[i:])]
 
-#I took the lines (LineString) of the geodataframe 
+### not sure if dissolve is the smartet way here or if I should dissolve bygroup
 network_to_cut = network_edges.dissolve()
-new_network = cut(network_to_cut.geometry, 1000)
-'''
+network_to_cut = linemerge(network_to_cut.iloc[0])
+new_network = cut(network_to_cut, 1000.0)
+
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -95,7 +99,7 @@ network_edges['normalized_centrality'] = (network_edges['centrality']-network_ed
 # define boundaries to mask raster
 ### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
 AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
-AOI = AOI.to_crs(epsg=32644)
+AOI = AOI.to_crs(network_nodes.crs)
 AOI = AOI.dissolve()
 AOI.to_file("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/aoi.shp")
 
@@ -132,7 +136,7 @@ def get_filename(url):
 outdir = r"C:/Users/Danny/Desktop/EMMA/IV/Data/Population/"
 
 # File locations
-url_list = ["https://data.worldpop.org/GIS/Population/Global_2000_2020/2020/NPL/npl_ppp_2020_UNadj.tif"]
+url_list = ["https://data.worldpop.org/GIS/Population/Global_2000_2020_Constrained/2020/BSGM/NPL/npl_ppp_2020_constrained.tif"]
 
 # Create folder if it does no exist
 if not os.path.exists(outdir):
@@ -152,7 +156,7 @@ for url in url_list:
 # open downloaded raster and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
 with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj.tif", mode='r+') as src:
-    src.crs = AOI.crs
+    src.crs = network_nodes.crs
     pyplot.imshow(src.read(1), cmap='pink')
     def getFeatures(gdf):
         """Function to parse features from GeoDataFrame in such a manner that rasterio wants them"""
@@ -215,7 +219,7 @@ network_edges.plot('strategic_importance_score', label='strategic importance', c
 # retrieve buildings
 tags = {'building': True}
 buildings = ox.geometries_from_place(study_area, tags)
-buildings = buildings.to_crs(CRS(AOI.crs))
+buildings = buildings.to_crs(CRS(network_nodes.crs))
 
 '''
 fig, ax = plt.subplots(figsize=(12,8))
@@ -243,7 +247,7 @@ buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 # convert building polygons to points in lat, lon format and convert to gdf
 building_centroids = buildings.centroid
 building_centroids = gpd.GeoDataFrame(geometry=gpd.GeoSeries(building_centroids))
-building_centroids = building_centroids.to_crs(AOI.crs)
+building_centroids = building_centroids.to_crs(network_nodes.crs)
 
 building_centroids['x'] = building_centroids.geometry.apply(lambda x: x.x)
 building_centroids['y'] = building_centroids.geometry.apply(lambda x: x.y)
