@@ -11,6 +11,12 @@ Created on Sun May  8 12:04:30 2022
 ########## = new chapter
 """
 
+#%%
+########## INPUTS
+download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
+study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Please use OSM Nominatim: https://nominatim.openstreetmap.org/ui/search.html
+population_type = "constrained" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
+
 ########## IMPORTS
 #%%
 import osmnx as ox
@@ -20,6 +26,7 @@ import rasterio as rio
 import rasterstats
 import pandas as pd
 from shapely.ops import linemerge
+import fiona
 from pyproj import CRS
 import numpy as np
 import matplotlib.pyplot as plt
@@ -35,20 +42,30 @@ import inspect
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 import requests
 from rasterio.mask import mask
+from wpgpDownload.utils.wpcsv import ISO_LIST
+from wpgpDownload.utils.wpcsv import Product
+from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 
 #%%
 ########## RETRIEVE AND PROCESS OSM-DATA
-# define study area + fetch OSM street network data
+# fetch OSM street network data
 ### use custom_filter instead of network_type for specific road types or utility lines
-study_area = (["Beni, Nepal", "Jaljala, Nepal"])
 network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500, clean_periphery=True)
 
 #%%
 # project the data
-network_proj = ox.project_graph(network)
+network_proj = network #ox.project_graph(network)
 network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
-network_nodes = network_nodes.to_crs(epsg=32644)
 #network_edges = network_edges.dropna()
+
+#%%
+# define boundaries to mask raster
+### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
+AOI = ox.geocode_to_gdf(study_area)
+AOI = AOI.dissolve()
+AOI = AOI.to_crs(CRS(network_nodes.crs))
+AOI_file = download_path + "aoi.shp"
+AOI.to_file(AOI_file)
 
 #%%
 '''
@@ -59,13 +76,13 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
-
+'''
 # cut edges in 1000m segments
 # ERROR: ValueError: The truth value of a Series is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
 # ERROR: GeometryTypeError: Unknown geometry type: featurecollection
 def cut(line, distance):
 # Cuts a line in two at a distance from its starting point
-    if (distance <= 0.0) or (distance >= line.length).bool():
+    if (distance <= 0.0) or (distance >= line.length).item():
         return [LineString(line)]
     coords = list(line.coords)
     for i, p in enumerate(coords):
@@ -81,10 +98,10 @@ def cut(line, distance):
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
 ### not sure if dissolve is the smartet way here or if I should dissolve bygroup
-network_to_cut = network_edges.dissolve()
-network_to_cut = linemerge(network_to_cut.iloc[0])
-new_network = cut(network_to_cut, 1000.0)
-
+#network_to_cut = network_edges.dissolve()
+#network_to_cut = linemerge(network_to_cut.iloc[0])
+new_network = cut(network_edges, 1000.0)
+'''
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -94,68 +111,32 @@ centrality = nx.closeness_centrality(nx.line_graph(network_proj))
 network_edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
 network_edges['normalized_centrality'] = (network_edges['centrality']-network_edges['centrality'].min())/(network_edges['centrality'].max()-network_edges['centrality'].min())
 
-##### ADD POPULATION RASTER AND ASSIGN POPULATION SCORES
 #%%
-# define boundaries to mask raster
-### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
-AOI = ox.geocode_to_gdf(study_area, buffer_dist=500)
-AOI = AOI.to_crs(network_nodes.crs)
-AOI = AOI.dissolve()
-AOI.to_file("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/aoi.shp")
-
-#%%%
-'''
+##### ADD POPULATION RASTER AND ASSIGN POPULATION SCORES
 # identify ISO country code to automatically download population raster based on OSM-input
+if not download_path.endswith("/"):
+    download_path = download_path + "/"
+
 study_area_str = " ".join(study_area)
 for country in pycountry.countries:
     if country.name in study_area_str:
         iso_code = country.alpha_3
 
+'''products = Product(iso_code)  # Where instead of NPL it could be any valid ISO code.
+#  to list all the products for NPL
+for p in products:
+    if "2020" in p.dataset_name: 
+        print('%s/%s\t%s\t%s' % (p.idx, p.country_name,p.dataset_name,p.path))'''
 
-from wpgpDownload.utils.wpcsv import ISO_LIST
-for iso in ISO_LIST:
-    print(iso)
-
-from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
-dl(ISO='GRC', out_folder='C:/Users/Danny/Desktop/EMMA/IV/Data/Population', prod_name='ccidadminl1')
-'''
-
-#%%%
-# manually download raster (for now since API doesn't work)
-import os
-import urllib
-
-def get_filename(url):
-    """
-    Parses filename from given url
-    """
-    if url.find('/'):
-        return url.rsplit('/', 1)[1]
-
-# Filepaths
-outdir = r"C:/Users/Danny/Desktop/EMMA/IV/Data/Population/"
-
-# File locations
-url_list = ["https://data.worldpop.org/GIS/Population/Global_2000_2020_Constrained/2020/BSGM/NPL/npl_ppp_2020_constrained.tif"]
-
-# Create folder if it does no exist
-if not os.path.exists(outdir):
-    os.makedirs(outdir)
-
-# Download files
-for url in url_list:
-    # Parse filename
-    fname = get_filename(url)
-    outfp = os.path.join(outdir, fname)
-    # Download the file if it does not exist already
-    if not os.path.exists(outfp):
-        print("Downloading", fname)
-        r = urllib.request.urlretrieve(url, outfp)
+prod_name_input = "ppp_2020_" + population_type
+dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
 #%%
 # open downloaded raster and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
-with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj.tif", mode='r+') as src:
+file_name = iso_code + "_" + prod_name_input + ".tif"
+file_name = file_name.lower()
+with rio.open(download_path + file_name, mode='r+') as src:
     src.crs = network_nodes.crs
     pyplot.imshow(src.read(1), cmap='pink')
     def getFeatures(gdf):
@@ -163,14 +144,14 @@ with rio.open("C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj
         import json
         return [json.loads(gdf.to_json())['features'][0]['geometry']]
     coords = AOI['geometry']
-    clipped_array, clipped_transform = mask(dataset=src, shapes=coords, invert=True)
+    clipped_array, clipped_transform = mask(dataset=src, shapes=coords)
 
     out_meta = src.meta.copy()
     out_meta.update({"driver": "GTiff",
                     "height": clipped_array.shape[1],
                     "width": clipped_array.shape[2],
                     "transform": clipped_transform})
-    out_tif= "C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif"
+    out_tif = download_path + file_name + "_clipped.tif"
     with rio.open(out_tif, "w", **out_meta) as dest:
         dest.write(clipped_array) 
     clipped = rio.open(out_tif)
