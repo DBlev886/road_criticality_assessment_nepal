@@ -34,13 +34,9 @@ from shapely import speedups
 speedups.enabled
 import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
-from shapely.geometry import LineString, shape
 from matplotlib import pyplot
 from math import sqrt
 import pycountry
-import inspect
-from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
-import requests
 from rasterio.mask import mask
 from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
@@ -76,13 +72,13 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
-'''
+network_edges['segment_length'] = network_edges.length
 # cut edges in 1000m segments
 # ERROR: ValueError: The truth value of a Series is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
 # ERROR: GeometryTypeError: Unknown geometry type: featurecollection
 def cut(line, distance):
 # Cuts a line in two at a distance from its starting point
-    if (distance <= 0.0) or (distance >= line.length).item():
+    if (distance <= 0.0) or (distance >= line['segment_length']):
         return [LineString(line)]
     coords = list(line.coords)
     for i, p in enumerate(coords):
@@ -101,7 +97,6 @@ def cut(line, distance):
 #network_to_cut = network_edges.dissolve()
 #network_to_cut = linemerge(network_to_cut.iloc[0])
 new_network = cut(network_edges, 1000.0)
-'''
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -319,3 +314,4 @@ network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
 nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
 fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
+# %%
