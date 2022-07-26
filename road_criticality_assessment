@@ -4,6 +4,9 @@ Created on Sun May  8 12:04:30 2022
 
 @author: Danny Baldig
 
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+venv\scripts\activate
+
 
 # = comments on what code does
 ### = methodological comment (just for me)
@@ -14,6 +17,7 @@ Created on Sun May  8 12:04:30 2022
 #%%
 ########## INPUTS
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
+lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Please use OSM Nominatim: https://nominatim.openstreetmap.org/ui/search.html
 population_type = "constrained" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
 
@@ -24,6 +28,8 @@ import networkx as nx
 import geopandas as gpd
 import rasterio as rio
 import rasterstats
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+import rioxarray as rxr
 import pandas as pd
 from shapely.ops import linemerge
 import fiona
@@ -31,7 +37,7 @@ from pyproj import CRS
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely import speedups
-speedups.enabled
+#speedups.enabled
 import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
 from matplotlib import pyplot
@@ -43,14 +49,20 @@ from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 
 #%%
+'''study_area_npl = (["Gandaki, Nepal"])    # Please use OSM Nominatim: https://nominatim.openstreetmap.org/ui/search.html
+network_npl = ox.graph_from_place(study_area_npl, network_type="drive", buffer_dist=500, clean_periphery=True)
+network_nodes_npl, network_edges_npl = ox.graph_to_gdfs(network_npl, nodes=True, edges=True)
+network_edges_npl['highway'].value_counts()'''
+
+#%%
 ########## RETRIEVE AND PROCESS OSM-DATA
 # fetch OSM street network data
 ### use custom_filter instead of network_type for specific road types or utility lines
-network = ox.graph_from_place(study_area, network_type="drive", buffer_dist=500, clean_periphery=True)
+network = ox.graph_from_place(study_area, network_type="drive", clean_periphery=True)
 
 #%%
 # project the data
-network_proj = network #ox.project_graph(network)
+network_proj = network#ox.project_graph(network)
 network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
 #network_edges = network_edges.dropna()
 
@@ -72,13 +84,11 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
-network_edges['segment_length'] = network_edges.length
-# cut edges in 1000m segments
-# ERROR: ValueError: The truth value of a Series is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
-# ERROR: GeometryTypeError: Unknown geometry type: featurecollection
+'''
+# cut edges in 1000m segments from its starting point
+# ERROR: AttributeError: 'GeoDataFrame' object has no attribute '__array_interface__'
 def cut(line, distance):
-# Cuts a line in two at a distance from its starting point
-    if (distance <= 0.0) or (distance >= line['segment_length']):
+    if [(distance <= 0.0) | (distance >= line.length)]:
         return [LineString(line)]
     coords = list(line.coords)
     for i, p in enumerate(coords):
@@ -93,10 +103,8 @@ def cut(line, distance):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-### not sure if dissolve is the smartet way here or if I should dissolve bygroup
-#network_to_cut = network_edges.dissolve()
-#network_to_cut = linemerge(network_to_cut.iloc[0])
 new_network = cut(network_edges, 1000.0)
+'''
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -127,37 +135,58 @@ prod_name_input = "ppp_2020_" + population_type
 dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
 #%%
-# open downloaded raster and mask with AOI boundary
+# open downloaded raster, reproject, and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
+raster_crs = network_edges.crs
+mask_coords = AOI['geometry']
 file_name = iso_code + "_" + prod_name_input + ".tif"
 file_name = file_name.lower()
-with rio.open(download_path + file_name, mode='r+') as src:
-    src.crs = network_nodes.crs
-    pyplot.imshow(src.read(1), cmap='pink')
-    def getFeatures(gdf):
-        """Function to parse features from GeoDataFrame in such a manner that rasterio wants them"""
-        import json
-        return [json.loads(gdf.to_json())['features'][0]['geometry']]
-    coords = AOI['geometry']
-    clipped_array, clipped_transform = mask(dataset=src, shapes=coords)
+pop_path = download_path + file_name
+file_substr = ".tif"
+pop_idx = pop_path.index(file_substr)
+pop_proj_tif = pop_path[:pop_idx] + "_reproj" + pop_path[pop_idx:]
+pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped" + pop_proj_tif[pop_idx:]
 
-    out_meta = src.meta.copy()
-    out_meta.update({"driver": "GTiff",
-                    "height": clipped_array.shape[1],
-                    "width": clipped_array.shape[2],
-                    "transform": clipped_transform})
-    out_tif = download_path + file_name + "_clipped.tif"
-    with rio.open(out_tif, "w", **out_meta) as dest:
-        dest.write(clipped_array) 
-    clipped = rio.open(out_tif)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    p1 = AOI.plot(color=None,facecolor='none',edgecolor='red',linewidth = 2,ax=ax)
+with rio.open(pop_path, mode='r+') as pop:
+    transform, width, height = calculate_default_transform(
+        pop.crs, raster_crs, pop.width, pop.height, *pop.bounds)
+    kwargs = pop.meta.copy()
+    kwargs.update({
+        'crs': raster_crs,
+        'transform': transform,
+        'width': width,
+        'height': height
+    })
+
+    with rio.open(pop_proj_tif, 'w', **kwargs) as pop_proj:
+        for i in range(1, pop.count + 1):
+            reproject(
+                source=rio.band(pop, i),
+                destination=rio.band(pop_proj, i),
+                lc_transform=pop.transform,
+                lc_crs=pop.crs,
+                lc_proj_transform=transform,
+                raster_crs=raster_crs,
+                resampling=Resampling.nearest)
+
+with rio.open(pop_proj_tif) as pop_proj:
+    pop_out_image, out_transform = rio.mask.mask(pop_proj, mask_coords)#, crop=True)
+    pop_out_meta = pop.meta
+
+pop_out_meta.update({"driver": "GTiff",
+                 "height": pop_out_image.shape[1],
+                 "width": pop_out_image.shape[2],
+                 "transform": out_transform})
+
+with rio.open(pop_proj_clip_tif, "w", **pop_out_meta) as pop_dest:
+    pop_dest.write(pop_out_image)
 
 #%%
 # read clipped population raster and assign values to numpy nd array
 #pop_count =  rio.open(clipped)
-pop_count_array = clipped.read(1)
-affine = clipped.transform
+pop_raster = rio.open(pop_proj_clip_tif)
+pop_count_array = pop_raster.read(1)
+affine = pop_raster.transform
 #%%
 # calculating zonal statistics
 pop_mean = rasterstats.zonal_stats(network_edges, pop_count_array, affine = affine,
@@ -218,6 +247,63 @@ buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 
 #ax = buffered.plot(color='red', edgecolor='black', alpha=0.5)
 #ax = buildings.plot(ax=ax, color='yellow', markersize=1, alpha=0.5)
+
+#%%%
+
+lc_idx = lc_path.index(file_substr)
+lc_proj_tif = lc_path[:lc_idx] + "_reproj" + lc_path[lc_idx:]
+lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped" + lc_proj_tif[lc_idx:]
+
+with rio.open(lc_path) as lc:
+    transform, width, height = calculate_default_transform(
+        lc.crs, raster_crs, lc.width, lc.height, *lc.bounds)
+    kwargs = lc.meta.copy()
+    kwargs.update({
+        'crs': raster_crs,
+        'transform': transform,
+        'width': width,
+        'height': height
+    })
+
+    with rio.open(lc_proj_tif, 'w', **kwargs) as lc_proj:
+        for i in range(1, lc.count + 1):
+            reproject(
+                source=rio.band(lc, i),
+                destination=rio.band(lc_proj, i),
+                lc_transform=lc.transform,
+                lc_crs=lc.crs,
+                lc_proj_transform=transform,
+                raster_crs=raster_crs,
+                resampling=Resampling.nearest)
+
+with rio.open(lc_proj_tif) as lc_proj:
+    lc_out_image, out_transform = rio.mask.mask(lc_proj, mask_coords)#, crop=True)
+    lc_out_meta = lc.meta
+
+lc_out_meta.update({"driver": "GTiff",
+                 "height": lc_out_image.shape[1],
+                 "width": lc_out_image.shape[2],
+                 "transform": out_transform})
+
+with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
+    lc_dest.write(lc_out_image)
+
+#%%
+lidar_dem_im = rxr.open_rasterio(lc_path)
+lc_raster = rio.open(lc_proj_clip_tif)
+f, ax = plt.subplots(figsize=(10, 6))
+lidar_dem_im.plot.hist(ax=ax,
+       color="purple")
+ax.set(title="Distribution of Lidar DEM Elevation Values",
+       xlabel='Elevation (meters)',
+       ylabel='Frequency')
+plt.show()
+
+'''
+##### Land cover
+https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
+'''
+#%%
 
 '''
 # convert building polygons to points in lat, lon format and convert to gdf
