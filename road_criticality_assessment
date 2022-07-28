@@ -18,10 +18,11 @@ venv\scripts\activate
 ########## INPUTS
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
 lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
-study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Please use OSM Nominatim: https://nominatim.openstreetmap.org/ui/search.html
+study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
 population_type = "constrained" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
 
 ########## IMPORTS
+### get rid of unused packages
 #%%
 import osmnx as ox
 import networkx as nx
@@ -29,21 +30,26 @@ import geopandas as gpd
 import rasterio as rio
 import rasterstats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
+from rasterio.plot import show_hist
 import rioxarray as rxr
 import pandas as pd
 from shapely.ops import linemerge
 import fiona
 from pyproj import CRS
 import numpy as np
+from matplotlib import pyplot
 import matplotlib.pyplot as plt
 from shapely import speedups
-#speedups.enabled
+speedups.enabled
+from shapely.ops import unary_union
+from shapely.ops import substring
+%matplotlib inline
 import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
-from matplotlib import pyplot
 from math import sqrt
 import pycountry
 from rasterio.mask import mask
+import os
 from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
@@ -84,10 +90,10 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
-'''
-# cut edges in 1000m segments from its starting point
+
+# creating and executing funtion that cuts edges in 1000m (default) segments from its starting point
 # ERROR: AttributeError: 'GeoDataFrame' object has no attribute '__array_interface__'
-def cut(line, distance):
+def cut(line, distance=1000.0):
     if [(distance <= 0.0) | (distance >= line.length)]:
         return [LineString(line)]
     coords = list(line.coords)
@@ -103,8 +109,9 @@ def cut(line, distance):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-new_network = cut(network_edges, 1000.0)
-'''
+for index, row in network_edges.iterrows():
+    new_network = cut(row)
+
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -170,7 +177,7 @@ with rio.open(pop_path, mode='r+') as pop:
                 resampling=Resampling.nearest)
 
 with rio.open(pop_proj_tif) as pop_proj:
-    pop_out_image, out_transform = rio.mask.mask(pop_proj, mask_coords)#, crop=True)
+    pop_out_image, out_transform = rio.mask.mask(pop_proj, mask_coords, crop=True)
     pop_out_meta = pop.meta
 
 pop_out_meta.update({"driver": "GTiff",
@@ -252,7 +259,7 @@ buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 
 lc_idx = lc_path.index(file_substr)
 lc_proj_tif = lc_path[:lc_idx] + "_reproj" + lc_path[lc_idx:]
-lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped" + lc_proj_tif[lc_idx:]
+lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped2" + lc_proj_tif[lc_idx:]
 
 with rio.open(lc_path) as lc:
     transform, width, height = calculate_default_transform(
@@ -277,7 +284,7 @@ with rio.open(lc_path) as lc:
                 resampling=Resampling.nearest)
 
 with rio.open(lc_proj_tif) as lc_proj:
-    lc_out_image, out_transform = rio.mask.mask(lc_proj, mask_coords)#, crop=True)
+    lc_out_image, out_transform = rio.mask.mask(lc_proj, mask_coords, crop=True)
     lc_out_meta = lc.meta
 
 lc_out_meta.update({"driver": "GTiff",
@@ -288,19 +295,64 @@ lc_out_meta.update({"driver": "GTiff",
 with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
     lc_dest.write(lc_out_image)
 
+
 #%%
-lidar_dem_im = rxr.open_rasterio(lc_path)
-lc_raster = rio.open(lc_proj_clip_tif)
-f, ax = plt.subplots(figsize=(10, 6))
-lidar_dem_im.plot.hist(ax=ax,
-       color="purple")
-ax.set(title="Distribution of Lidar DEM Elevation Values",
-       xlabel='Elevation (meters)',
-       ylabel='Frequency')
-plt.show()
+network_edges = network_edges.to_crs(32644)
+# dataframe is a multiindex which causes problems
+network_edges.index = network_edges.index.get_level_values(0)
+network_edges.columns = network_edges.columns.get_level_values(0)
+
+line = network_edges["geometry"]
+n = 10
+def points_on_line(line):
+    # or to get the distances closest to the desired one:
+    # n = round(line.length / desired_distance_delta)
+    distances = np.linspace(0, network_edges.length, n)
+    # or alternatively without NumPy:
+    # distances = (line.length * i / (n - 1) for i in range(n))
+    points = [line.interpolate(distance) for distance in distances]
+    #multipoint = unary_union(points)  
+    #new_line = LineString(points)
+
+test = network_edges.apply(points_on_line)
+
+
+
+
+#%%
+# Read points from shapefile
+pts = network_nodes[['x', 'y', 'geometry']]
+pts.index = range(len(pts))
+coords = [(x,y) for x, y in zip(pts.x, pts.y)]
+
+# Open the raster and store metadata
+raster = rio.open(lc_proj_clip_tif)
+band1 = raster.read(1)
+
+# Sample the raster at every point location and store values in DataFrame
+pts['Raster Value'] = [x[0] for x in raster.sample(coords)]
+
+
+plt.imshow(band1)
+plt.tight_layout()
+
+uniq_vals = np.unique(band1)
+print(sorted(uniq_vals))
+
+counts, bins = np.histogram(band1, bins=8)
+for i in range(len(bins)-1):
+    print("bin lower bound:", bins[i])
+    print("counts:", counts[i])
+
+'''print(raster.mode)
+print(raster.count)
+print(raster.width)
+print(raster.height)
+print(raster.crs)
+print(raster.bounds)'''
 
 '''
-##### Land cover
+##### Land cover download
 https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
 '''
 #%%
