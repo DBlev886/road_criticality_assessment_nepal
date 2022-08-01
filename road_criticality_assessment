@@ -91,12 +91,40 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 
 #%%
 
-# creating and executing funtion that cuts edges in 1000m (default) segments from its starting point
+# creating and executing function that cuts edges in 1000m (default) segments from its starting point
 # ERROR: AttributeError: 'GeoDataFrame' object has no attribute '__array_interface__'
-def cut(line, distance=1000.0):
-    if [(distance <= 0.0) | (distance >= line.length)]:
-        return [LineString(line)]
-    coords = list(line.coords)
+
+#network_edges['test'] = network_edges['geometry'].apply(lambda geometry: LineString(geometry))
+network_edges = network_edges.to_crs(32644)
+#network_edges_xy = gg.vector.extract_xy(network_edges=network_edges)
+
+network_edges.index = network_edges.index.get_level_values(0)
+network_edges.columns = network_edges.columns.get_level_values(0)
+
+#%%
+
+'''
+distance_delta = 1000
+# generate the equidistant points
+distances = np.arange(0, network_edges.length, distance_delta)
+points = MultiPoint([network_edges.interpolate(distance) for distance in distances] + [network_edges.boundary[1]])
+print(len(distances), len(points))
+'''
+
+#%%
+def coord_lister(geom):
+    coords = list(geom.coords)
+    return (coords)
+
+coords = network_edges.geometry.apply(coord_lister)
+
+
+def cut(line, distance=1000):
+# Cuts a line in two at a distance from its starting point
+    #if distance <= 0.0 or distance >= line:
+    if np.where(network_edges['length'] < 1000, 0, 1):
+       return [LineString(line)]
+    #coords = list(line.coords)
     for i, p in enumerate(coords):
         pd = line.project(Point(p))
         if pd == distance:
@@ -109,9 +137,7 @@ def cut(line, distance=1000.0):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-for index, row in network_edges.iterrows():
-    new_network = cut(row)
-
+network_edges['test'] = network_edges.apply(lambda x: cut)
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -297,7 +323,7 @@ with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
 
 
 #%%
-network_edges = network_edges.to_crs(32644)
+
 # dataframe is a multiindex which causes problems
 network_edges.index = network_edges.index.get_level_values(0)
 network_edges.columns = network_edges.columns.get_level_values(0)
@@ -452,4 +478,3 @@ network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
 nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
 fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
-# %%
