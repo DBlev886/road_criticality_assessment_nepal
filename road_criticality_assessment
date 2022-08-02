@@ -15,15 +15,13 @@ venv\scripts\activate
 """
 
 #%%
-########## INPUTS
+########## INPUTS and IMPORTS
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
 lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
 population_type = "constrained" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
 
-########## IMPORTS
-### get rid of unused packages
-#%%
+### get rid of unused packages -> linter doesn't work
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
@@ -39,6 +37,7 @@ from pyproj import CRS
 import numpy as np
 from matplotlib import pyplot
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 from shapely import speedups
 speedups.enabled
 from shapely.ops import unary_union
@@ -55,24 +54,16 @@ from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 
 #%%
-'''study_area_npl = (["Gandaki, Nepal"])    # Please use OSM Nominatim: https://nominatim.openstreetmap.org/ui/search.html
-network_npl = ox.graph_from_place(study_area_npl, network_type="drive", buffer_dist=500, clean_periphery=True)
-network_nodes_npl, network_edges_npl = ox.graph_to_gdfs(network_npl, nodes=True, edges=True)
-network_edges_npl['highway'].value_counts()'''
-
-#%%
 ########## RETRIEVE AND PROCESS OSM-DATA
 # fetch OSM street network data
 ### use custom_filter instead of network_type for specific road types or utility lines
 network = ox.graph_from_place(study_area, network_type="drive", clean_periphery=True)
 
-#%%
 # project the data
-network_proj = network#ox.project_graph(network)
+network_proj = ox.project_graph(network)
 network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
 #network_edges = network_edges.dropna()
 
-#%%
 # define boundaries to mask raster
 ### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
 AOI = ox.geocode_to_gdf(study_area)
@@ -90,13 +81,26 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
+# creating and executing function that cuts edges in 1000m (default) segments from its starting point
 
-# creating and executing funtion that cuts edges in 1000m (default) segments from its starting point
-# ERROR: AttributeError: 'GeoDataFrame' object has no attribute '__array_interface__'
-def cut(line, distance=1000.0):
-    if [(distance <= 0.0) | (distance >= line.length)]:
-        return [LineString(line)]
-    coords = list(line.coords)
+#network_edges['test'] = network_edges['geometry'].apply(lambda geometry: LineString(geometry))
+network_edges = network_edges.to_crs(32644)
+#network_edges_xy = gg.vector.extract_xy(network_edges=network_edges)
+
+network_edges.index = network_edges.index.get_level_values(0)
+network_edges.columns = network_edges.columns.get_level_values(0)
+
+def coord_lister(geom):
+    coords = list(geom.coords)
+    return (coords)
+coords = network_edges.geometry.apply(coord_lister)
+
+def cut(line, distance=1000):
+# Cuts a line in two at a distance from its starting point
+    #if distance <= 0.0 or distance >= line:
+    if np.where(network_edges['length'] < 1000, 0, 1):
+       return [LineString(line)]
+    #coords = list(line.coords)
     for i, p in enumerate(coords):
         pd = line.project(Point(p))
         if pd == distance:
@@ -109,9 +113,7 @@ def cut(line, distance=1000.0):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-for index, row in network_edges.iterrows():
-    new_network = cut(row)
-
+network_edges['test'] = network_edges.apply(lambda x: cut)
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
@@ -141,7 +143,6 @@ for p in products:
 prod_name_input = "ppp_2020_" + population_type
 dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
-#%%
 # open downloaded raster, reproject, and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
 raster_crs = network_edges.crs
@@ -152,7 +153,7 @@ pop_path = download_path + file_name
 file_substr = ".tif"
 pop_idx = pop_path.index(file_substr)
 pop_proj_tif = pop_path[:pop_idx] + "_reproj" + pop_path[pop_idx:]
-pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped" + pop_proj_tif[pop_idx:]
+pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped2" + pop_proj_tif[pop_idx:]
 
 with rio.open(pop_path, mode='r+') as pop:
     transform, width, height = calculate_default_transform(
@@ -185,16 +186,16 @@ pop_out_meta.update({"driver": "GTiff",
                  "width": pop_out_image.shape[2],
                  "transform": out_transform})
 
+# gives wrong CRS for some reason
 with rio.open(pop_proj_clip_tif, "w", **pop_out_meta) as pop_dest:
     pop_dest.write(pop_out_image)
 
-#%%
 # read clipped population raster and assign values to numpy nd array
 #pop_count =  rio.open(clipped)
 pop_raster = rio.open(pop_proj_clip_tif)
 pop_count_array = pop_raster.read(1)
 affine = pop_raster.transform
-#%%
+
 # calculating zonal statistics
 pop_mean = rasterstats.zonal_stats(network_edges, pop_count_array, affine = affine,
                                             stats = ['mean'],
@@ -215,6 +216,7 @@ network_edges['pop_mean'] = pop_mean['mean']
 network_edges['normalized_pop'] = (network_edges['pop_mean']-network_edges['pop_mean'].min())/(network_edges['pop_mean'].max()-network_edges['pop_mean'].min())
 network_edges['strategic_importance_quantile'] = network_edges['normalized_centrality'] + network_edges['normalized_pop']
 
+#%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
 network_edges['strategic_importance_score'] = pd.qcut(network_edges['strategic_importance_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
 
@@ -228,21 +230,6 @@ network_edges.plot('strategic_importance_score', label='strategic importance', c
 #network_edges.to_file(outfp)
 
 
-# retrieve buildings
-tags = {'building': True}
-buildings = ox.geometries_from_place(study_area, tags)
-buildings = buildings.to_crs(CRS(network_nodes.crs))
-
-'''
-fig, ax = plt.subplots(figsize=(12,8))
-# Plot edges and nodes
-network_edges.plot(ax=ax, linewidth=0.75, color='gray')
-network_nodes.plot(ax=ax, markersize=2, color='gray')
-# Add buildings
-ax = buildings.plot(ax=ax, facecolor='red', alpha=0.7)
-# Add basemap
-ctx.add_basemap(ax, crs=buildings.crs, source=ctx.providers.CartoDB.Positron)
-'''
 
 ###################### BUFFER EDGES
 # buffer edges
@@ -255,11 +242,40 @@ buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 #ax = buffered.plot(color='red', edgecolor='black', alpha=0.5)
 #ax = buildings.plot(ax=ax, color='yellow', markersize=1, alpha=0.5)
 
+#%%
+# trying to automatize land cover download
+import requests
+import bs4
+
+site_url = 'http://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729'
+userid = 'danny.baldig@student.uibk.ac.at'
+password = 'icimodPW977'
+
+file_url = 'http://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729'
+o_file = 'nlcms_2019.zip'
+
+# create session
+s = requests.Session()
+# GET request. This will generate cookie for you
+s.get(site_url)
+# login to site.
+s.post(site_url, data={'_username': userid, '_password': password})
+# Next thing will be to visit URL for file you would like to download.
+r = s.get(file_url)
+
+# Download file
+with open(o_file, 'wb') as output:
+    output.write(r.content)
+print(f"requests:: File {o_file} downloaded successfully!")
+
+# Close session once all work done
+s.close()
+
 #%%%
 
 lc_idx = lc_path.index(file_substr)
 lc_proj_tif = lc_path[:lc_idx] + "_reproj" + lc_path[lc_idx:]
-lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped2" + lc_proj_tif[lc_idx:]
+lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped3" + lc_proj_tif[lc_idx:]
 
 with rio.open(lc_path) as lc:
     transform, width, height = calculate_default_transform(
@@ -292,12 +308,14 @@ lc_out_meta.update({"driver": "GTiff",
                  "width": lc_out_image.shape[2],
                  "transform": out_transform})
 
+# output with wrong CRS again
 with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
     lc_dest.write(lc_out_image)
+    lc_dest.close()
 
 
 #%%
-network_edges = network_edges.to_crs(32644)
+
 # dataframe is a multiindex which causes problems
 network_edges.index = network_edges.index.get_level_values(0)
 network_edges.columns = network_edges.columns.get_level_values(0)
@@ -314,8 +332,7 @@ def points_on_line(line):
     #multipoint = unary_union(points)  
     #new_line = LineString(points)
 
-test = network_edges.apply(points_on_line)
-
+test = network_edges.apply(lambda x: points_on_line)
 
 
 
@@ -355,9 +372,29 @@ print(raster.bounds)'''
 ##### Land cover download
 https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
 '''
-#%%
 
+
+#%%
 '''
+# retrieve buildings
+tags = {'building': True}
+buildings = ox.geometries_from_place(study_area, tags)
+buildings = buildings.to_crs(CRS(network_nodes.crs))
+
+
+fig, ax = plt.subplots(figsize=(12,8))
+# Plot edges and nodes
+network_edges.plot(ax=ax, linewidth=0.75, color='gray')
+network_nodes.plot(ax=ax, markersize=2, color='gray')
+# Add buildings
+ax = buildings.plot(ax=ax, facecolor='red', alpha=0.7)
+# Add basemap
+ctx.add_basemap(ax, crs=buildings.crs, source=ctx.providers.CartoDB.Positron)
+
+
+
+
+
 # convert building polygons to points in lat, lon format and convert to gdf
 building_centroids = buildings.centroid
 building_centroids = gpd.GeoDataFrame(geometry=gpd.GeoSeries(building_centroids))
@@ -452,4 +489,3 @@ network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
 nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
 fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
-# %%
