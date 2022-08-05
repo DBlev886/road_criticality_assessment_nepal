@@ -42,6 +42,7 @@ from shapely import speedups
 speedups.enabled
 from shapely.ops import unary_union
 from shapely.ops import substring
+from shapely import wkt
 %matplotlib inline
 import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
@@ -52,6 +53,8 @@ import os
 from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
+
+#pd.set_option('display.max_colwidth', None)
 
 #%%
 ########## RETRIEVE AND PROCESS OSM-DATA
@@ -83,9 +86,7 @@ network_nodes.plot(ax=ax, markersize=2, color='gray')
 #%%
 # creating and executing function that cuts edges in 1000m (default) segments from its starting point
 
-#network_edges['test'] = network_edges['geometry'].apply(lambda geometry: LineString(geometry))
 network_edges = network_edges.to_crs(32644)
-#network_edges_xy = gg.vector.extract_xy(network_edges=network_edges)
 
 network_edges.index = network_edges.index.get_level_values(0)
 network_edges.columns = network_edges.columns.get_level_values(0)
@@ -98,7 +99,7 @@ coords = network_edges.geometry.apply(coord_lister)
 def cut(line, distance=1000):
 # Cuts a line in two at a distance from its starting point
     #if distance <= 0.0 or distance >= line:
-    if np.where(network_edges['length'] < 1000, 0, 1):
+    if np.where(line.length < distance, 0, 1):
        return [LineString(line)]
     #coords = list(line.coords)
     for i, p in enumerate(coords):
@@ -113,7 +114,31 @@ def cut(line, distance=1000):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-network_edges['test'] = network_edges.apply(lambda x: cut)
+network_edges['cut'] = network_edges['geometry'].apply(cut)
+
+network_edges = network_edges.assign(new_test=np.where(network_edges.cut.isnull(), network_edges.geometry, network_edges.cut))
+
+#%%
+'''from shapely import wkt
+
+network_edges['new_test'] = network_edges['new_test'].astype('str') 
+#network_edges['new_test'] = network_edges['new_test'].astype('|S') #where the max length is set at 80 bytes,
+print(network_edges.dtypes)
+df['geometry'] = network_edges['new_test'].apply(wkt.loads)
+'''
+#%%
+'''my_str = str(network_edges['cut']
+substr = ",
+inserttxt = ")"
+
+idx = my_str.index(substr)
+my_str = my_str[:idx] + inserttxt + my_str[idx:]
+'''
+
+#%%
+#p = gpd.GeoSeries(network_edges_cut)
+network_edges.plot()
+plt.show()
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
