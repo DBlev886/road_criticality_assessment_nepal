@@ -14,12 +14,14 @@ venv\scripts\activate
 ########## = new chapter
 """
 
+
 #%%
 ########## INPUTS and IMPORTS
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
 lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
 population_type = "constrained" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
+
 
 ### get rid of unused packages -> linter doesn't work
 import osmnx as ox
@@ -42,6 +44,7 @@ from shapely import speedups
 speedups.enabled
 from shapely.ops import unary_union
 from shapely.ops import substring
+from shapely import wkt
 %matplotlib inline
 import pprint
 from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
@@ -53,6 +56,9 @@ from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 
+#pd.set_option('display.max_colwidth', None)
+
+
 #%%
 ########## RETRIEVE AND PROCESS OSM-DATA
 # fetch OSM street network data
@@ -60,45 +66,45 @@ from wpgpDownload.utils.convenience_functions import download_country_covariates
 network = ox.graph_from_place(study_area, network_type="drive", clean_periphery=True)
 
 # project the data
-network_proj = ox.project_graph(network)
-network_nodes, network_edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
-#network_edges = network_edges.dropna()
+network_proj = network#ox.project_graph(network)
+nodes, edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+#edges = edges.dropna()
 
 # define boundaries to mask raster
 ### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
 AOI = ox.geocode_to_gdf(study_area)
 AOI = AOI.dissolve()
-AOI = AOI.to_crs(CRS(network_nodes.crs))
+AOI = AOI.to_crs(CRS(nodes.crs))
 AOI_file = download_path + "aoi.shp"
 AOI.to_file(AOI_file)
+
 
 #%%
 '''
 # plot data
 fig, ax = plt.subplots(figsize=(12,8))
-network_edges.plot(ax=ax, linewidth=0.75, color='gray')
-network_nodes.plot(ax=ax, markersize=2, color='gray')
+edges.plot(ax=ax, linewidth=0.75, color='gray')
+nodes.plot(ax=ax, markersize=2, color='gray')
 '''
+
 
 #%%
 # creating and executing function that cuts edges in 1000m (default) segments from its starting point
 
-#network_edges['test'] = network_edges['geometry'].apply(lambda geometry: LineString(geometry))
-network_edges = network_edges.to_crs(32644)
-#network_edges_xy = gg.vector.extract_xy(network_edges=network_edges)
+edges = edges.to_crs(32644)
 
-network_edges.index = network_edges.index.get_level_values(0)
-network_edges.columns = network_edges.columns.get_level_values(0)
+edges.index = edges.index.get_level_values(0)
+edges.columns = edges.columns.get_level_values(0)
 
 def coord_lister(geom):
     coords = list(geom.coords)
     return (coords)
-coords = network_edges.geometry.apply(coord_lister)
+coords = edges.geometry.apply(coord_lister)
 
 def cut(line, distance=1000):
 # Cuts a line in two at a distance from its starting point
     #if distance <= 0.0 or distance >= line:
-    if np.where(network_edges['length'] < 1000, 0, 1):
+    if np.where(line.length < distance, 0, 1):
        return [LineString(line)]
     #coords = list(line.coords)
     for i, p in enumerate(coords):
@@ -113,15 +119,29 @@ def cut(line, distance=1000):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-network_edges['test'] = network_edges.apply(lambda x: cut)
+edges['cut'] = edges['geometry'].apply(cut)
+
+edges = edges.assign(new_test=np.where(edges.cut.isnull(), edges.geometry, edges.cut))
+
+#%%
+'''# geometries appear to be in the wrong format to be used
+from shapely import wkt
+
+edges['new_test'] = edges['new_test'].astype('str') 
+#edges['new_test'] = edges['new_test'].astype('|S') #where the max length is set at 80 bytes,
+print(edges.dtypes)
+df['geometry'] = edges['new_test'].apply(wkt.loads)'''
+
+
 
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
 ###### ASSIGN CENTRALITY SCORES
 ### normalize centrality values to summarize them with population later to create quantiles
 centrality = nx.closeness_centrality(nx.line_graph(network_proj))
-network_edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
-network_edges['normalized_centrality'] = (network_edges['centrality']-network_edges['centrality'].min())/(network_edges['centrality'].max()-network_edges['centrality'].min())
+edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
+edges['normalized_centrality'] = (edges['centrality']-edges['centrality'].min())/(edges['centrality'].max()-edges['centrality'].min())
+
 
 #%%
 ##### ADD POPULATION RASTER AND ASSIGN POPULATION SCORES
@@ -145,7 +165,7 @@ dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
 # open downloaded raster, reproject, and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
-raster_crs = network_edges.crs
+raster_crs = edges.crs
 mask_coords = AOI['geometry']
 file_name = iso_code + "_" + prod_name_input + ".tif"
 file_name = file_name.lower()
@@ -197,7 +217,7 @@ pop_count_array = pop_raster.read(1)
 affine = pop_raster.transform
 
 # calculating zonal statistics
-pop_mean = rasterstats.zonal_stats(network_edges, pop_count_array, affine = affine,
+pop_mean = rasterstats.zonal_stats(edges, pop_count_array, affine = affine,
                                             stats = ['mean'],
                                             geojson_out = True)
 
@@ -211,39 +231,23 @@ while i < len(pop_mean):
 
 # transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
 pop_mean = pd.DataFrame(pop_mean_list)
-pop_mean = pop_mean.set_index(network_edges.index)
-network_edges['pop_mean'] = pop_mean['mean']
-network_edges['normalized_pop'] = (network_edges['pop_mean']-network_edges['pop_mean'].min())/(network_edges['pop_mean'].max()-network_edges['pop_mean'].min())
-network_edges['strategic_importance_quantile'] = network_edges['normalized_centrality'] + network_edges['normalized_pop']
+pop_mean = pop_mean.set_index(edges.index)
+edges['pop_mean'] = pop_mean['mean']
+edges['normalized_pop'] = (edges['pop_mean']-edges['pop_mean'].min())/(edges['pop_mean'].max()-edges['pop_mean'].min())
+edges['strategic_importance_quantile'] = edges['normalized_centrality'] + edges['normalized_pop']
+
 
 #%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
-network_edges['strategic_importance_score'] = pd.qcut(network_edges['strategic_importance_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+edges['strategic_importance_score'] = pd.qcut(edges['strategic_importance_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
 
-network_edges.plot('normalized_centrality', label='centrality', cmap='RdYlBu_r', legend=True)
-network_edges.plot('normalized_pop', label='population', cmap='RdYlBu_r', legend=True)
-network_edges.plot('strategic_importance_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
+edges.plot('normalized_centrality', label='centrality', cmap='RdYlBu_r', legend=True)
+edges.plot('normalized_pop', label='population', cmap='RdYlBu_r', legend=True)
+edges.plot('strategic_importance_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
 
-#network_edges = network_edges.reindex(columns=['strategic_importance'])
-#network_edges.plot(column='strategic_importance')
-#outfp = 'C:/Users/Danny/Beni/edges_strategic.shp'
-#network_edges.to_file(outfp)
-
-
-
-###################### BUFFER EDGES
-# buffer edges
-buffered = network_edges.buffer(100, cap_style=2)
-buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
-#buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
-#buffered.plot()
-
-
-#ax = buffered.plot(color='red', edgecolor='black', alpha=0.5)
-#ax = buildings.plot(ax=ax, color='yellow', markersize=1, alpha=0.5)
 
 #%%
-# trying to automatize land cover download
+# trying to automatize land cover download /// doesn't work yet
 import requests
 import bs4
 
@@ -317,28 +321,56 @@ with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
 #%%
 
 # dataframe is a multiindex which causes problems
-network_edges.index = network_edges.index.get_level_values(0)
-network_edges.columns = network_edges.columns.get_level_values(0)
+edges.index = edges.index.get_level_values(0)
+edges.columns = edges.columns.get_level_values(0)
 
-line = network_edges["geometry"]
+test_example = LineString(([0, 0], [2, 1], [3, 2], [3.5, 1], [5, 2]))
+
+
+#line = edges["geometry"]
 n = 10
 def points_on_line(line):
     # or to get the distances closest to the desired one:
     # n = round(line.length / desired_distance_delta)
-    distances = np.linspace(0, network_edges.length, n)
+    distances = np.linspace(0, line.length, n)
     # or alternatively without NumPy:
     # distances = (line.length * i / (n - 1) for i in range(n))
     points = [line.interpolate(distance) for distance in distances]
-    #multipoint = unary_union(points)  
-    #new_line = LineString(points)
+    multipoint = unary_union(points)  
+    new_line = LineString(points)
 
-test = network_edges.apply(lambda x: points_on_line)
 
+new = points_on_line(test_example)
+
+#%%
+
+# unique requires lots of processing
+from rasterstats import zonal_stats
+
+#zs = zonal_stats(edges, lc_proj_clip_tif)
+edges['land_cover_majority'] = zonal_stats(edges, lc_proj_clip_tif,
+            stats="majority")
+
+edges['land_cover_count'] = zonal_stats(edges, lc_proj_clip_tif,
+            stats="sada")
+
+
+#test = edges['geometry'].apply(points_on_line)
+#test = edges.apply(lambda x: points_on_line)
+
+#%%
+
+edges['land_cover_final'] = np.where(edges.land_cover_majority == edges.land_cover_minority, edges['land_cover_majority'], edges['land_cover_majority'].astype(str) + edges['land_cover_minority'].astype(str))
+
+edges['land_cover_final'] = edges['land_cover_final'].replace(["minority: .0"],"")
+edges['land_cover_final'] = edges['land_cover_final'].map(lambda x: x.lstrip('+-').rstrip('minority: .0'))
+
+print(edges['land_cover_final'])
 
 
 #%%
 # Read points from shapefile
-pts = network_nodes[['x', 'y', 'geometry']]
+pts = nodes[['x', 'y', 'geometry']]
 pts.index = range(len(pts))
 coords = [(x,y) for x, y in zip(pts.x, pts.y)]
 
@@ -374,31 +406,38 @@ https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
 '''
 
 
+
+#%%
+###################### BUFFER EDGES
+'''# buffer edges
+buffered = edges.buffer(100, cap_style=2)
+buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
+#buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
+#buffered.plot()
+'''
+
 #%%
 '''
 # retrieve buildings
 tags = {'building': True}
 buildings = ox.geometries_from_place(study_area, tags)
-buildings = buildings.to_crs(CRS(network_nodes.crs))
+buildings = buildings.to_crs(CRS(nodes.crs))
 
 
 fig, ax = plt.subplots(figsize=(12,8))
 # Plot edges and nodes
-network_edges.plot(ax=ax, linewidth=0.75, color='gray')
-network_nodes.plot(ax=ax, markersize=2, color='gray')
+edges.plot(ax=ax, linewidth=0.75, color='gray')
+nodes.plot(ax=ax, markersize=2, color='gray')
 # Add buildings
 ax = buildings.plot(ax=ax, facecolor='red', alpha=0.7)
 # Add basemap
 ctx.add_basemap(ax, crs=buildings.crs, source=ctx.providers.CartoDB.Positron)
 
 
-
-
-
 # convert building polygons to points in lat, lon format and convert to gdf
 building_centroids = buildings.centroid
 building_centroids = gpd.GeoDataFrame(geometry=gpd.GeoSeries(building_centroids))
-building_centroids = building_centroids.to_crs(network_nodes.crs)
+building_centroids = building_centroids.to_crs(nodes.crs)
 
 building_centroids['x'] = building_centroids.geometry.apply(lambda x: x.x)
 building_centroids['y'] = building_centroids.geometry.apply(lambda x: x.y)
