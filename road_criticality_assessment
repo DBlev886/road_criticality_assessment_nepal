@@ -66,7 +66,7 @@ from wpgpDownload.utils.convenience_functions import download_country_covariates
 network = ox.graph_from_place(study_area, network_type="drive", clean_periphery=True)
 
 # project the data
-network_proj = network#ox.project_graph(network)
+network_proj = ox.project_graph(network)
 nodes, edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
 #edges = edges.dropna()
 
@@ -133,15 +133,21 @@ print(edges.dtypes)
 df['geometry'] = edges['new_test'].apply(wkt.loads)'''
 
 
-
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
 ###### ASSIGN CENTRALITY SCORES
 ### normalize centrality values to summarize them with population later to create quantiles
-centrality = nx.closeness_centrality(nx.line_graph(network_proj))
-edges['centrality'] = pd.DataFrame.from_dict(centrality, orient='index')
-edges['normalized_centrality'] = (edges['centrality']-edges['centrality'].min())/(edges['centrality'].max()-edges['centrality'].min())
+CC = nx.closeness_centrality(nx.line_graph(network_proj))
+edges['cc'] = pd.DataFrame.from_dict(CC, orient='index')
+edges['normalized_cc'] = (edges['cc']-edges['cc'].min())/(edges['cc'].max()-edges['cc'].min())
 
+
+#%%
+BC = nx.betweenness_centrality(nx.line_graph(network_proj))#, weight="length")
+edges['bc'] = pd.DataFrame.from_dict(BC, orient='index')
+edges['normalized_bc'] = (edges['bc']-edges['bc'].min())/(edges['bc'].max()-edges['bc'].min())
+
+edges['centrality_avg'] = (edges['normalized_cc'] + edges['normalized_cc']) / 2
 
 #%%
 ##### ADD POPULATION RASTER AND ASSIGN POPULATION SCORES
@@ -234,14 +240,14 @@ pop_mean = pd.DataFrame(pop_mean_list)
 pop_mean = pop_mean.set_index(edges.index)
 edges['pop_mean'] = pop_mean['mean']
 edges['normalized_pop'] = (edges['pop_mean']-edges['pop_mean'].min())/(edges['pop_mean'].max()-edges['pop_mean'].min())
-edges['strategic_importance_quantile'] = edges['normalized_centrality'] + edges['normalized_pop']
+edges['strategic_importance_quantile'] = edges['centrality_avg'] + edges['normalized_pop']
 
 
 #%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
 edges['strategic_importance_score'] = pd.qcut(edges['strategic_importance_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
 
-edges.plot('normalized_centrality', label='centrality', cmap='RdYlBu_r', legend=True)
+edges.plot('normalized_cc', label='centrality', cmap='RdYlBu_r', legend=True)
 edges.plot('normalized_pop', label='population', cmap='RdYlBu_r', legend=True)
 edges.plot('strategic_importance_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
 
@@ -487,33 +493,6 @@ def apply_tariff_iterrows(building_centroids):
         possible_matches = building_centroids.iloc[possible_matches_index]
         precise_matches = possible_matches[possible_matches.intersects(geometry)]
         energy_cost_list << precise matches
-
-
-
-###################### CENTRALITY INDICES
-# node closeness centrality
-node_centrality = nx.closeness_centrality(network_proj)
-# plot it
-df = pd.DataFrame(data=pd.Series(node_centrality).sort_values(), columns=['cc'])
-df['colors'] = ox.plot.get_colors(n=len(df), cmap='inferno', start=0.2)
-df = df.reindex(network_proj.nodes())
-nc = df['colors'].tolist()
-fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=30, node_color=nc, node_edgecolor='none', node_zorder=2,
-                        edge_color='#555555', edge_linewidth=1.5, edge_alpha=1)
-
-# edge closeness centrality: convert graph to a line graph so edges become nodes and vice versa
-
-# list of edge values for the orginal graph
-#ev = [network_gdf['centrality'][edge + (0,)] for edge in network_proj.edges()]
-
-# color scale converted to list of colors for graph edges
-norm = colors.Normalize(vmin=min(ev)*0.8, vmax=max(ev))
-cmap = cm.ScalarMappable(norm=norm, cmap=cm.inferno)
-ec = [cmap.to_rgba(cl) for cl in ev]
-
-# color the edges in the original graph with closeness centralities in the line graph
-fig, ax = ox.plot_graph(network_proj, bgcolor='k', node_size=0, node_color='w', node_edgecolor='gray', node_zorder=2,
-                        edge_color=ec, edge_linewidth=1.5, edge_alpha=1)
 
 
 ###################### ELEVATION GRADES ### not sure if this is useful eventually
