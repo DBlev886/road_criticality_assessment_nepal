@@ -56,7 +56,7 @@ from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 
-#pd.set_option('display.max_colwidth', None)
+pd.set_option('display.max_colwidth', None)
 
 
 #%%
@@ -87,26 +87,12 @@ edges.plot(ax=ax, linewidth=0.75, color='gray')
 nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
-
 #%%
-# creating and executing function that cuts edges in 1000m (default) segments from its starting point
-
-edges = edges.to_crs(32644)
-
-edges.index = edges.index.get_level_values(0)
-edges.columns = edges.columns.get_level_values(0)
-
-def coord_lister(geom):
-    coords = list(geom.coords)
-    return (coords)
-coords = edges.geometry.apply(coord_lister)
-
 def cut(line, distance=1000):
 # Cuts a line in two at a distance from its starting point
-    #if distance <= 0.0 or distance >= line:
-    if np.where(line.length < distance, 0, 1):
-       return [LineString(line)]
-    #coords = list(line.coords)
+    if distance <= 0.0 or distance >= line.length:
+        return [LineString(line)]
+    coords = list(line.coords)
     for i, p in enumerate(coords):
         pd = line.project(Point(p))
         if pd == distance:
@@ -120,17 +106,6 @@ def cut(line, distance=1000):
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
 edges['cut'] = edges['geometry'].apply(cut)
-
-edges = edges.assign(new_test=np.where(edges.cut.isnull(), edges.geometry, edges.cut))
-
-#%%
-'''# geometries appear to be in the wrong format to be used
-from shapely import wkt
-
-edges['new_test'] = edges['new_test'].astype('str') 
-#edges['new_test'] = edges['new_test'].astype('|S') #where the max length is set at 80 bytes,
-print(edges.dtypes)
-df['geometry'] = edges['new_test'].apply(wkt.loads)'''
 
 
 #%%
@@ -169,6 +144,7 @@ for p in products:
 prod_name_input = "ppp_2020_" + population_type
 dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
+#%%
 # open downloaded raster, reproject, and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
 raster_crs = edges.crs
@@ -179,7 +155,8 @@ pop_path = download_path + file_name
 file_substr = ".tif"
 pop_idx = pop_path.index(file_substr)
 pop_proj_tif = pop_path[:pop_idx] + "_reproj" + pop_path[pop_idx:]
-pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped2" + pop_proj_tif[pop_idx:]
+pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped" + pop_proj_tif[pop_idx:]
+
 
 with rio.open(pop_path, mode='r+') as pop:
     transform, width, height = calculate_default_transform(
@@ -235,6 +212,8 @@ while i < len(pop_mean):
     pop_mean_list.append(pop_mean[i]['properties'])
     i = i + 1
 
+
+#%%
 # transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
 pop_mean = pd.DataFrame(pop_mean_list)
 pop_mean = pop_mean.set_index(edges.index)
