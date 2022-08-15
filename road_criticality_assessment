@@ -20,10 +20,11 @@ venv\scripts\activate
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
 lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
-population_type = "constrained" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
+population_type = "" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
 
 
 ### get rid of unused packages -> linter doesn't work
+from ctypes.wintypes import HDWP
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
@@ -40,6 +41,7 @@ import numpy as np
 from matplotlib import pyplot
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from rasterstats import zonal_stats
 from shapely import speedups
 speedups.enabled
 from shapely.ops import unary_union
@@ -56,18 +58,46 @@ from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
 from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 
+#%%
 pd.set_option('display.max_colwidth', None)
-
 
 #%%
 ########## RETRIEVE AND PROCESS OSM-DATA
 # fetch OSM street network data
 ### use custom_filter instead of network_type for specific road types or utility lines
-network = ox.graph_from_place(study_area, network_type="drive", clean_periphery=True)
+
+
+network = ox.graph_from_place(study_area, 
+                              network_type="drive", 
+                              clean_periphery=True)
 
 # project the data
 network_proj = ox.project_graph(network)
-nodes, edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
+nodes, edges = ox.graph_to_gdfs(network_proj, 
+                                nodes=True, 
+                                edges=True)
+
+#edges = edges.drop(
+#                ["lanes",
+#                 "maxspeed",
+#                 "access"], 
+#                 axis=1)
+
+# Cannot write file: ValueError: Invalid field type <class 'list'>
+#for col in edges.columns:
+#    if any(isinstance(val, list) for val in edges[col]):
+#        print('Column: {0}, has a list in it'.format(col))
+#        #edges['highway'] = edges['osmid'].apply(lambda x: ' '.join(x))
+#        #print('Column: {0}, has a list in it'.format(col))
+#edges.columns = edges.columns.to_flat_index()
+#edges.columns = edges.columns.get_level_values(0)
+#outfp = "C:/Users/Danny/Desktop/EMMA/IV/Data/edges.shp"
+#edges.to_file(outfp)
+
+
+
+#%%
+#edges = edges.assign(ref=lambda edges: edges.loc[:,"ref"].str.extract(r"(.*) \\.+") )
 #edges = edges.dropna()
 
 # define boundaries to mask raster
@@ -75,9 +105,9 @@ nodes, edges = ox.graph_to_gdfs(network_proj, nodes=True, edges=True)
 AOI = ox.geocode_to_gdf(study_area)
 AOI = AOI.dissolve()
 AOI = AOI.to_crs(CRS(nodes.crs))
+AOI['geometry'] = AOI.geometry.buffer(2000)
 AOI_file = download_path + "aoi.shp"
 AOI.to_file(AOI_file)
-
 
 #%%
 '''
@@ -88,6 +118,13 @@ nodes.plot(ax=ax, markersize=2, color='gray')
 '''
 
 #%%
+
+hw = edges[edges['highway'].isin(['trunk', 'primary', 'tertiary'])]
+
+
+#%%
+### apply function only to certain highway types later
+
 def cut(line, distance=1000):
 # Cuts a line in two at a distance from its starting point
     if distance <= 0.0 or distance >= line.length:
@@ -105,26 +142,51 @@ def cut(line, distance=1000):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-edges['cut'] = edges['geometry'].apply(cut)
+
+hw['cut'] = hw['geometry'].apply(cut)
 
 
+#%%
+hw['cut1'] = hw.cut.astype('str').str.split(', L', expand = True)[0]
+
+try:
+    hw['cut2'] = hw.cut.astype('str').str.split(', L', expand = True)[1]
+except KeyError:
+    pass
+
+hw.head(2)
 #%%
 ########## ASSIGN STRATEGICAL IMPORTANCE SCORES
 ###### ASSIGN CENTRALITY SCORES
 ### normalize centrality values to summarize them with population later to create quantiles
 CC = nx.closeness_centrality(nx.line_graph(network_proj))
 edges['cc'] = pd.DataFrame.from_dict(CC, orient='index')
-edges['normalized_cc'] = (edges['cc']-edges['cc'].min())/(edges['cc'].max()-edges['cc'].min())
+edges['norm_cc'] = (edges['cc']-edges['cc'].min())/(edges['cc'].max()-edges['cc'].min())
 
-
-#%%
 BC = nx.betweenness_centrality(nx.line_graph(network_proj))#, weight="length")
 edges['bc'] = pd.DataFrame.from_dict(BC, orient='index')
-edges['normalized_bc'] = (edges['bc']-edges['bc'].min())/(edges['bc'].max()-edges['bc'].min())
+edges['norm_bc'] = (edges['bc']-edges['bc'].min())/(edges['bc'].max()-edges['bc'].min())
 
-edges['centrality_avg'] = (edges['normalized_cc'] + edges['normalized_cc']) / 2
+edges['centrality_avg'] = (edges['norm_cc'] + edges['norm_cc']) / 2
+
+'''
+edges.plot('norm_cc', label='cc', cmap='RdYlBu_r', legend=True)
+edges.plot('norm_bc', label='bc', cmap='RdYlBu_r', legend=True)
+edges.plot('centrality_avg', label='avg', cmap='RdYlBu_r', legend=True)
+'''
 
 #%%
+
+highways = ['trunk', 'primary', 'tertiary']
+rslt_df = edges[edges['highway'].isin(highways)]
+
+rslt_df.plot()
+
+#print(edges[edges['length'] > 1000])
+#print(rslt_df[rslt_df['length'] > 1000])
+
+#%%
+
 ##### ADD POPULATION RASTER AND ASSIGN POPULATION SCORES
 # identify ISO country code to automatically download population raster based on OSM-input
 if not download_path.endswith("/"):
@@ -135,19 +197,23 @@ for country in pycountry.countries:
     if country.name in study_area_str:
         iso_code = country.alpha_3
 
-'''products = Product(iso_code)  # Where instead of NPL it could be any valid ISO code.
-#  to list all the products for NPL
-for p in products:
-    if "2020" in p.dataset_name: 
-        print('%s/%s\t%s\t%s' % (p.idx, p.country_name,p.dataset_name,p.path))'''
+#%%
 
-prod_name_input = "ppp_2020_" + population_type
-dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
+products = Product(iso_code)  # Where instead of NPL it could be any valid ISO code.
+#  to list all the products for NPL
+#for p in products:
+#    if "2020" in p.dataset_name: 
+#        print('%s/%s\t%s\t%s' % (p.idx, p.country_name,p.dataset_name,p.path))
+
+prod_name_input = "ppp_2020" + population_type
+
+#dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
+
 
 #%%
 # open downloaded raster, reproject, and mask with AOI boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
-raster_crs = edges.crs
+raster_crs = CRS(AOI.crs).to_epsg()
 mask_coords = AOI['geometry']
 file_name = iso_code + "_" + prod_name_input + ".tif"
 file_name = file_name.lower()
@@ -157,7 +223,7 @@ pop_idx = pop_path.index(file_substr)
 pop_proj_tif = pop_path[:pop_idx] + "_reproj" + pop_path[pop_idx:]
 pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped" + pop_proj_tif[pop_idx:]
 
-
+#%%
 with rio.open(pop_path, mode='r+') as pop:
     transform, width, height = calculate_default_transform(
         pop.crs, raster_crs, pop.width, pop.height, *pop.bounds)
@@ -174,33 +240,48 @@ with rio.open(pop_path, mode='r+') as pop:
             reproject(
                 source=rio.band(pop, i),
                 destination=rio.band(pop_proj, i),
-                lc_transform=pop.transform,
-                lc_crs=pop.crs,
-                lc_proj_transform=transform,
-                raster_crs=raster_crs,
                 resampling=Resampling.nearest)
 
+
+#%%
 with rio.open(pop_proj_tif) as pop_proj:
-    pop_out_image, out_transform = rio.mask.mask(pop_proj, mask_coords, crop=True)
-    pop_out_meta = pop.meta
+    pop_out_image, out_transform = rio.mask.mask(pop_proj, AOI.geometry, crop=True)
+    pop_out_meta = pop_proj.meta
 
 pop_out_meta.update({"driver": "GTiff",
                  "height": pop_out_image.shape[1],
                  "width": pop_out_image.shape[2],
                  "transform": out_transform})
 
-# gives wrong CRS for some reason
 with rio.open(pop_proj_clip_tif, "w", **pop_out_meta) as pop_dest:
     pop_dest.write(pop_out_image)
 
+#pop_dest.close() # close the rasterio dataset
+
+
+#%%
 # read clipped population raster and assign values to numpy nd array
 #pop_count =  rio.open(clipped)
 pop_raster = rio.open(pop_proj_clip_tif)
 pop_count_array = pop_raster.read(1)
 affine = pop_raster.transform
 
+
+#%%
+###################### BUFFER EDGES
+# buffer edges
+buffered = edges.buffer(100, cap_style=2)
+buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
+#buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
+#buffered.plot()
+
+
+#%%
+
 # calculating zonal statistics
-pop_mean = rasterstats.zonal_stats(edges, pop_count_array, affine = affine,
+pop_means = rasterstats.zonal_stats(edges, pop_count_array, 
+                                            affine = affine,
+                                            nodata = np.nan,
                                             stats = ['mean'],
                                             geojson_out = True)
 
@@ -208,9 +289,10 @@ pop_mean = rasterstats.zonal_stats(edges, pop_count_array, affine = affine,
 pop_mean_list = []
 i = 0
 
-while i < len(pop_mean):
-    pop_mean_list.append(pop_mean[i]['properties'])
+while i < len(pop_means):
+    pop_mean_list.append(pop_means[i]['properties'])
     i = i + 1
+
 
 
 #%%
@@ -218,18 +300,19 @@ while i < len(pop_mean):
 pop_mean = pd.DataFrame(pop_mean_list)
 pop_mean = pop_mean.set_index(edges.index)
 edges['pop_mean'] = pop_mean['mean']
-edges['normalized_pop'] = (edges['pop_mean']-edges['pop_mean'].min())/(edges['pop_mean'].max()-edges['pop_mean'].min())
-edges['strategic_importance_quantile'] = edges['centrality_avg'] + edges['normalized_pop']
+edges['norm_pop'] = (edges['pop_mean']-edges['pop_mean'].min())/(edges['pop_mean'].max()-edges['pop_mean'].min())
+edges['si_quantile'] = edges['centrality_avg'] + edges['norm_pop']
 
 
 #%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
-edges['strategic_importance_score'] = pd.qcut(edges['strategic_importance_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+edges['si_score'] = pd.qcut(edges['si_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
 
-edges.plot('normalized_cc', label='centrality', cmap='RdYlBu_r', legend=True)
-edges.plot('normalized_pop', label='population', cmap='RdYlBu_r', legend=True)
-edges.plot('strategic_importance_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
-
+'''
+edges.plot('norm_cc', label='centrality', cmap='RdYlBu_r', legend=True)
+edges.plot('norm_pop', label='population', cmap='RdYlBu_r', legend=True)
+edges.plot('si_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
+'''
 
 #%%
 # trying to automatize land cover download /// doesn't work yet
@@ -264,7 +347,7 @@ s.close()
 
 lc_idx = lc_path.index(file_substr)
 lc_proj_tif = lc_path[:lc_idx] + "_reproj" + lc_path[lc_idx:]
-lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped3" + lc_proj_tif[lc_idx:]
+lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped" + lc_proj_tif[lc_idx:]
 
 with rio.open(lc_path) as lc:
     transform, width, height = calculate_default_transform(
@@ -282,15 +365,11 @@ with rio.open(lc_path) as lc:
             reproject(
                 source=rio.band(lc, i),
                 destination=rio.band(lc_proj, i),
-                lc_transform=lc.transform,
-                lc_crs=lc.crs,
-                lc_proj_transform=transform,
-                raster_crs=raster_crs,
                 resampling=Resampling.nearest)
 
 with rio.open(lc_proj_tif) as lc_proj:
     lc_out_image, out_transform = rio.mask.mask(lc_proj, mask_coords, crop=True)
-    lc_out_meta = lc.meta
+    lc_out_meta = lc_proj.meta
 
 lc_out_meta.update({"driver": "GTiff",
                  "height": lc_out_image.shape[1],
@@ -304,13 +383,9 @@ with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
 
 
 #%%
-
 # dataframe is a multiindex which causes problems
-edges.index = edges.index.get_level_values(0)
-edges.columns = edges.columns.get_level_values(0)
 
 test_example = LineString(([0, 0], [2, 1], [3, 2], [3.5, 1], [5, 2]))
-
 
 #line = edges["geometry"]
 n = 10
@@ -330,14 +405,12 @@ new = points_on_line(test_example)
 #%%
 
 # unique requires lots of processing
-from rasterstats import zonal_stats
-
 #zs = zonal_stats(edges, lc_proj_clip_tif)
 edges['land_cover_majority'] = zonal_stats(edges, lc_proj_clip_tif,
             stats="majority")
 
-edges['land_cover_count'] = zonal_stats(edges, lc_proj_clip_tif,
-            stats="sada")
+edges['land_cover_minority'] = zonal_stats(edges, lc_proj_clip_tif,
+            stats="minority")
 
 
 #test = edges['geometry'].apply(points_on_line)
@@ -388,17 +461,6 @@ print(raster.bounds)'''
 '''
 ##### Land cover download
 https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
-'''
-
-
-
-#%%
-###################### BUFFER EDGES
-'''# buffer edges
-buffered = edges.buffer(100, cap_style=2)
-buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
-#buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
-#buffered.plot()
 '''
 
 #%%
@@ -473,7 +535,10 @@ def apply_tariff_iterrows(building_centroids):
         precise_matches = possible_matches[possible_matches.intersects(geometry)]
         energy_cost_list << precise matches
 
+'''
 
+#%%%
+'''
 ###################### ELEVATION GRADES ### not sure if this is useful eventually
 ########## node elevations and edge grades
 # add node elevations from a single raster file
@@ -486,3 +551,31 @@ network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
 nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
 fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
+
+#%%
+
+for col in edges.columns:
+    if any(isinstance(val, list) for val in edges[col]):
+        print('Column: {0}, has a list in it'.format(col))
+        #edges['highway'] = edges['osmid'].apply(lambda x: ' '.join(x))
+        #print('Column: {0}, has a list in it'.format(col))
+
+
+#%%
+
+
+
+
+
+
+
+#%%
+# QUESTIONS
+# better to use df.loc[:,['col']] instead of df['col']?
+#
+#
+#
+#
+#
+#
+#
