@@ -11,50 +11,36 @@ venv\scripts\activate
 
 
 #%%
-########## INPUTS and IMPORTS
+########################################################################################
+################################## INPUTS AND IMPORTS ##################################
+########################################################################################
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
 lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
 population_type = "" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
 
-
-### get rid of unused packages -> linter doesn't work
-#from ctypes.wintypes import HDWP
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
 import rasterio as rio
+from rasterio.mask import mask
 import rasterstats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from rasterio.plot import show_hist
-import rioxarray as rxr
 import pandas as pd
-from shapely.ops import linemerge
-import fiona
 from pyproj import CRS
 import numpy as np
-from matplotlib import pyplot
-import matplotlib.pyplot as plt
-import matplotlib as mpl
 from rasterstats import zonal_stats
 from shapely import speedups
 speedups.enabled
-from shapely.ops import unary_union
-from shapely.ops import substring
-from shapely import wkt
 %matplotlib inline
-import pprint
-from shapely.geometry import Point, Polygon, MultiPoint, MultiLineString, MultiPolygon, LineString, shape
-from math import sqrt
+from shapely.geometry import Point, LineString
 import pycountry
-from rasterio.mask import mask
-import os
-from wpgpDownload.utils.wpcsv import ISO_LIST
 from wpgpDownload.utils.wpcsv import Product
-from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
+
 
 #%%
 pd.set_option('display.max_colwidth', 200)
+
 
 #%%
 ########################################################################################
@@ -207,7 +193,7 @@ pop_path = download_path + file_name
 file_substr = ".tif"
 pop_idx = pop_path.index(file_substr)
 pop_proj_tif = pop_path[:pop_idx] + "_reproj" + pop_path[pop_idx:]
-pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped1" + pop_proj_tif[pop_idx:]
+pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped" + pop_proj_tif[pop_idx:]
 
 #%%
 with rio.open(pop_path, mode='r+') as pop:
@@ -307,7 +293,6 @@ edges.plot('si_score', label='strategic importance', cmap='RdYlBu_r', legend=Tru
 
 # trying to automatize land cover download /// doesn't work yet
 import requests
-import bs4
 
 site_url = 'http://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729'
 userid = 'danny.baldig@student.uibk.ac.at'
@@ -383,7 +368,7 @@ main_edges
 #%%
 # land_cover codes: settlement: 6 + cropland: 7
 # order important to assign higher value first
-main_edges["land_cover_score"] = np.select([main_edges["land_cover_unique"].astype(str).str.contains(r"6"), main_edges["land_cover_unique"].astype(str).str.contains(r"7")], 
+main_edges["land_cover_score"] = np.select([main_edges["land_cover_unique"].astype(str).str.contains(r"6:"), main_edges["land_cover_unique"].astype(str).str.contains(r"7:")], 
                                             [0.5, 0.3], 
                                             0)
 
