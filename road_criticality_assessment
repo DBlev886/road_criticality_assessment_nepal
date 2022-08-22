@@ -17,7 +17,7 @@ venv\scripts\activate
 download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
 lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
 study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
-population_type = "" #("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
+population_type = "" # ("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
 
 import osmnx as ox
 import networkx as nx
@@ -32,10 +32,10 @@ import numpy as np
 from rasterstats import zonal_stats
 from shapely import speedups
 speedups.enabled
-%matplotlib inline
 from shapely.geometry import Point, LineString
 import pycountry
 from wpgpDownload.utils.wpcsv import Product
+import requests
 
 
 #%%
@@ -128,20 +128,26 @@ def cut(line, distance=1000):
 ###### ASSIGN CENTRALITY SCORES
 ### normalize centrality values to summarize them with population later to create quantiles
 CC = nx.closeness_centrality(nx.line_graph(full_network_proj))
-main_edges['cc'] = pd.DataFrame.from_dict(CC, orient='index')
-main_edges['norm_cc'] = (main_edges['cc']-main_edges['cc'].min())/(main_edges['cc'].max()-main_edges['cc'].min())
+all_edges['cc'] = pd.DataFrame.from_dict(CC, orient='index')
+all_edges['norm_cc'] = (all_edges['cc']-all_edges['cc'].min())/(all_edges['cc'].max()-all_edges['cc'].min())
 
 BC = nx.betweenness_centrality(nx.line_graph(full_network_proj))#, weight="length")
-main_edges['bc'] = pd.DataFrame.from_dict(BC, orient='index')
-main_edges['norm_bc'] = (main_edges['bc']-main_edges['bc'].min())/(main_edges['bc'].max()-main_edges['bc'].min())
+all_edges['bc'] = pd.DataFrame.from_dict(BC, orient='index')
+all_edges['norm_bc'] = (all_edges['bc']-all_edges['bc'].min())/(all_edges['bc'].max()-all_edges['bc'].min())
 
-main_edges['centrality_avg'] = (main_edges['norm_cc'] + main_edges['norm_cc']) / 2
+all_edges['centrality_avg'] = (all_edges['norm_cc'] + all_edges['norm_cc']) / 2
 
 '''
 edges.plot('norm_cc', label='cc', cmap='RdYlBu_r', legend=True)
 edges.plot('norm_bc', label='bc', cmap='RdYlBu_r', legend=True)
 edges.plot('centrality_avg', label='avg', cmap='RdYlBu_r', legend=True)
 '''
+
+
+#%%
+# copy all_edges centrality value to main_edges for main roads
+
+
 
 
 #%%
@@ -174,19 +180,19 @@ prod_name_input = "ppp_2020" + population_type
 #%%
 # define boundaries to mask raster
 ### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
-AOI = ox.geocode_to_gdf(study_area)
-AOI = AOI.dissolve()
-AOI = AOI.to_crs(CRS(all_nodes.crs))
-AOI['geometry'] = AOI.geometry.buffer(2000)
-AOI_file = download_path + "aoi.shp"
-AOI.to_file(AOI_file)
+aoi = ox.geocode_to_gdf(study_area)
+aoi = aoi.dissolve()
+aoi = aoi.to_crs(CRS(all_nodes.crs))
+aoi['geometry'] = aoi.geometry.buffer(2000)
+aoi_file = download_path + "aoi.shp"
+aoi.to_file(aoi_file)
 
 
 #%%
-# open downloaded raster, reproject, and mask with AOI boundary
+# open downloaded raster, reproject, and mask with aoi boundary
 # ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
-raster_crs = CRS(AOI.crs).to_epsg()
-mask_coords = AOI['geometry']
+raster_crs = CRS(aoi.crs).to_epsg()
+mask_coords = aoi['geometry']
 file_name = iso_code + "_" + prod_name_input + ".tif"
 file_name = file_name.lower()
 pop_path = download_path + file_name
@@ -217,7 +223,7 @@ with rio.open(pop_path, mode='r+') as pop:
 
 #%%
 with rio.open(pop_proj_tif) as pop_proj:
-    pop_out_image, out_transform = rio.mask.mask(pop_proj, AOI.geometry, crop=True)
+    pop_out_image, out_transform = rio.mask.mask(pop_proj, aoi.geometry, crop=True)
     pop_out_meta = pop_proj.meta
 
 pop_out_meta.update({"driver": "GTiff",
@@ -242,7 +248,9 @@ affine = pop_raster.transform
 #%%
 ###################### BUFFER EDGES
 # buffer edges
-buffered = main_edges.buffer(100, cap_style=2)
+buffered = main_edges.buffer(100, 
+                            cap_style=2,        # flat
+                            join_style=2)       # mitre
 buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 #buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
 #buffered.plot()
@@ -292,7 +300,6 @@ edges.plot('si_score', label='strategic importance', cmap='RdYlBu_r', legend=Tru
 ########################################################################################
 
 # trying to automatize land cover download /// doesn't work yet
-import requests
 
 site_url = 'http://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729'
 userid = 'danny.baldig@student.uibk.ac.at'
@@ -383,12 +390,33 @@ https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
 ########################### FOOTPRINTS / OTHERS FOR LATER ##############################
 ########################################################################################
 
-'''
-# retrieve buildings
-tags = {'building': True}
-buildings = ox.geometries_from_place(study_area, tags)
-buildings = buildings.to_crs(CRS(nodes.crs))
+gdf = ox.geometries_from_place(study_area,
+                               tags = {'building': True})
+gdf_proj = ox.project_gdf(gdf)
 
+
+#%%
+# generate spatial index
+sindex = buffered.sindex
+# define empty list for results
+results_list = []
+# iterate over the points
+for index, row in gdf_proj.iterrows():
+    # buffer = row['geometry'].buffer(0.5)  # buffer
+    # find approximate matches with r-tree, then precise matches from those approximate ones
+    possible_matches_index = list(sindex.intersection(buffered.bounds))
+    possible_matches = buffered.iloc[possible_matches_index]
+    precise_matches = possible_matches[possible_matches.intersects(buffered)]
+    results_list.append(len(precise_matches))
+# add list of results as a new column
+list = pd.Series(results_list)
+
+
+
+
+#%%
+
+'''
 
 fig, ax = plt.subplots(figsize=(12,8))
 # Plot edges and nodes
@@ -398,18 +426,6 @@ nodes.plot(ax=ax, markersize=2, color='gray')
 ax = buildings.plot(ax=ax, facecolor='red', alpha=0.7)
 # Add basemap
 ctx.add_basemap(ax, crs=buildings.crs, source=ctx.providers.CartoDB.Positron)
-
-
-# convert building polygons to points in lat, lon format and convert to gdf
-building_centroids = buildings.centroid
-building_centroids = gpd.GeoDataFrame(geometry=gpd.GeoSeries(building_centroids))
-building_centroids = building_centroids.to_crs(nodes.crs)
-
-building_centroids['x'] = building_centroids.geometry.apply(lambda x: x.x)
-building_centroids['y'] = building_centroids.geometry.apply(lambda x: x.y)
-
-#bounds = list(buffered.bounds.values[1])
-#sindex = building_centroids.sindex
 
 
 def intersect_using_spatial_index(building_centroids, buffered):
@@ -471,6 +487,7 @@ nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
 fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
 '''
 
+
 #%%
 
 '''
@@ -481,6 +498,7 @@ for col in edges.columns:
         #print('Column: {0}, has a list in it'.format(col))
 '''
 
+
 #%%
 # QUESTIONS
 # better to use df.loc[:,['col']] instead of df['col']?
@@ -490,4 +508,4 @@ for col in edges.columns:
 #
 #
 #
-#
+# main_edges.to_file('dataframe.shp')
