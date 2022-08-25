@@ -86,7 +86,30 @@ tertiary = main_edges[main_edges['highway'].isin(['tertiary'])]
 
 
 #%%
-trunk_new = trunk.unary_union
+trunk = trunk.reset_index()
+
+
+def find_adjacent(line): # for finding adjacent features
+    outlist = []
+    outinds = []
+    outset = set()
+    for j, l in line.iterrows():
+        as_set = set(line.geometry.astype(str))
+        inds = []
+        for k in outset.copy():
+            if outlist[k] & as_set:
+                outset.remove(k)
+                as_set |= outlist[k]
+                inds.extend(outinds[k])
+        outset.add(j)
+        outlist.append(as_set)
+        outinds.append(inds + [j])
+    outinds = [outinds[j] for j in outset]
+    del outset, outlist
+    result = [[line[j] for j in k] for k in outinds]
+    return result
+
+find_adjacent(trunk)
 
 #%%%
 '''
@@ -275,12 +298,14 @@ while i < len(pop_means):
 
 
 #%%
+'''
 # transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
 pop_mean = pd.DataFrame(pop_mean_list)
 pop_mean = pop_mean.set_index(main_edges.index)
 main_edges['pop_mean'] = pop_mean['mean']
 main_edges['norm_pop'] = (main_edges['pop_mean']-main_edges['pop_mean'].min())/(main_edges['pop_mean'].max()-main_edges['pop_mean'].min())
 main_edges['si_quantile'] = main_edges['centrality_avg'] + main_edges['norm_pop']
+'''
 
 
 #%%%
@@ -394,24 +419,64 @@ gdf = ox.geometries_from_place(study_area,
                                tags = {'building': True})
 gdf_proj = ox.project_gdf(gdf)
 
+gdf_centroid = gdf_proj.centroid
+gdf_df = gpd.GeoDataFrame(geometry=gpd.GeoSeries(gdf_centroid))
+west, south, east, north = aoi.unary_union.buffer(0.1).bounds
+
 
 #%%
+# Select a postal code area representing the city center of Helsinki
+
+def intersect_using_spatial_index(source_gdf, intersecting_gdf):
+    """
+    Conduct spatial intersection using spatial index for candidates GeoDataFrame to make queries faster.
+    Note, with this function, you can have multiple Polygons in the 'intersecting_gdf' and it will return all the points
+    intersect with ANY of those geometries.
+    """
+    source_sindex = source_gdf.sindex
+    possible_matches_index = []
+
+    # 'itertuples()' function is a faster version of 'iterrows()'
+    for other in intersecting_gdf.itertuples():
+        bounds = other.geometry.bounds
+        c = list(source_sindex.intersection(bounds))
+        possible_matches_index += c
+
+    # Get unique candidates
+    unique_candidate_matches = list(set(possible_matches_index))
+    possible_matches = source_gdf.iloc[unique_candidate_matches]
+
+    # Conduct the actual intersect
+    result = possible_matches.loc[possible_matches.intersects(intersecting_gdf.unary_union)]
+    return result
+
+#%%
+# Test the spatial query with spatial index
+list = intersect_using_spatial_index(source_gdf=gdf_centroid, intersecting_gdf=buffered)
+
+
+
+
+
+
+
+
 # generate spatial index
 sindex = buffered.sindex
+
+#%%
 # define empty list for results
 results_list = []
 # iterate over the points
-for index, row in gdf_proj.iterrows():
-    # buffer = row['geometry'].buffer(0.5)  # buffer
+for index, row in gdf_df.iterrows():
+    buffer = row['geometry'].buffer(5)  # buffer
     # find approximate matches with r-tree, then precise matches from those approximate ones
-    possible_matches_index = list(sindex.intersection(buffered.bounds))
+    possible_matches_index = list(sindex.intersection(buffer.bounds))
     possible_matches = buffered.iloc[possible_matches_index]
-    precise_matches = possible_matches[possible_matches.intersects(buffered)]
+    precise_matches = possible_matches[possible_matches.intersects(buffer)]
     results_list.append(len(precise_matches))
 # add list of results as a new column
-list = pd.Series(results_list)
-
-
+gdf_df['polygons'] = pd.Series(results_list)
 
 
 #%%
@@ -509,3 +574,6 @@ for col in edges.columns:
 #
 #
 # main_edges.to_file('dataframe.shp')
+# datos = gpd.read_file(all_edges, encoding='latin1')
+# gdf_df.to_file('buildings.shp')
+# buffered.to_file('buffered.shp')
