@@ -9,7 +9,6 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 venv\scripts\activate
 """
 
-
 #%%
 ########################################################################################
 ################################## INPUTS AND IMPORTS ##################################
@@ -22,6 +21,7 @@ population_type = "" # ("constrained": for official population counts or "UNadj_
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
+import shapely
 import rasterio as rio
 from rasterio.mask import mask
 import rasterstats
@@ -39,7 +39,7 @@ import requests
 
 
 #%%
-pd.set_option('display.max_colwidth', 200)
+pd.set_option('display.max_colwidth', None)
 
 
 #%%
@@ -48,14 +48,14 @@ pd.set_option('display.max_colwidth', 200)
 ########################################################################################
 
 ################################# FETCH WHOLE NETWORK ##################################
-full_network = ox.graph_from_place(study_area, 
-                            network_type="drive", 
+full_network = ox.graph_from_place(study_area,
+                            network_type="drive",
                             clean_periphery=True)
 
 # project the data
 full_network_proj = ox.project_graph(full_network)
-all_nodes, all_edges = ox.graph_to_gdfs(full_network_proj, 
-                            nodes=True, 
+all_nodes, all_edges = ox.graph_to_gdfs(full_network_proj,
+                            nodes=True,
                             edges=True)
 
 '''edges = edges.drop(
@@ -68,16 +68,17 @@ all_nodes, all_edges = ox.graph_to_gdfs(full_network_proj,
 #%%
 ################################# FETCH ONLY MAIN ROADS #################################
 cf = '["highway"~"trunk|primary|tertiary"]'
-main_network = ox.graph_from_place(study_area, 
+main_network = ox.graph_from_place(study_area,
                         simplify=False, 
                         custom_filter=cf)
 #fig, ax = ox.plot_graph(G)
 
 main_network_proj = ox.project_graph(main_network)
-main_nodes, main_edges = ox.graph_to_gdfs(main_network_proj, 
-                                nodes=True, 
+main_nodes, main_edges = ox.graph_to_gdfs(main_network_proj,
+                                nodes=True,
                                 edges=True)
 
+main_edges = main_edges[main_edges['reversed'].isin([0])]
 
 #%%
 trunk = main_edges[main_edges['highway'].isin(['trunk'])]
@@ -86,41 +87,22 @@ tertiary = main_edges[main_edges['highway'].isin(['tertiary'])]
 
 
 #%%
-trunk = trunk.reset_index()
+trunk_union = trunk.unary_union
+trunk_union = shapely.ops.linemerge(trunk_union)
+trunk_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[trunk_union])
 
+primary_union = primary.unary_union
+primary_union = shapely.ops.linemerge(primary_union)
+primary_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[primary_union])
 
-def find_adjacent(line): # for finding adjacent features
-    outlist = []
-    outinds = []
-    outset = set()
-    for j, l in line.iterrows():
-        as_set = set(line.geometry.astype(str))
-        inds = []
-        for k in outset.copy():
-            if outlist[k] & as_set:
-                outset.remove(k)
-                as_set |= outlist[k]
-                inds.extend(outinds[k])
-        outset.add(j)
-        outlist.append(as_set)
-        outinds.append(inds + [j])
-    outinds = [outinds[j] for j in outset]
-    del outset, outlist
-    result = [[line[j] for j in k] for k in outinds]
-    return result
+tertiary_union = tertiary.unary_union
+tertiary_union = shapely.ops.linemerge(tertiary_union)
+tertiary_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[tertiary_union])
 
-find_adjacent(trunk)
-
-#%%%
-'''
-main_edges = main_edges.dissolve(by = 'highway', 
-                        aggfunc = 'sum')
-auto_inter = gpd.overlay(main_edges, main_edges, how='intersection')
-'''
 
 #%%
-def cut(line, distance=1000):
-# Cuts a line in two at a distance from its starting point
+def cut(line, distance):
+    # Cuts a line in two at a distance from its starting point
     if distance <= 0.0 or distance >= line.length:
         return [LineString(line)]
     coords = list(line.coords)
@@ -137,9 +119,121 @@ def cut(line, distance=1000):
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
 
-#cut_trunk = trunk['geometry'].apply(cut)
-#cut_primary = primary['geometry'].apply(cut)
-#cut_tertiary = tertiary['geometry'].apply(cut)
+def MultiCut(line, pieces):
+    #Firts we need to define two list to append the results (lines) and the lines to cut
+    lines_result = [] #All the lines are add to this list
+    lines_to_cut = [] #The lines to cut are add to this list
+
+    #We must ensure that pieces are higher than 2
+    if pieces == 1: #If pieces are 1 the result is the same line
+        lines_result.append(line) 
+    elif pieces == 2: #If pieces are 2 the result is the line cut by the middle point
+        distance = (line.length)/pieces
+        lines_result.append(cut(line, distance)[0])
+        lines_result.append(cut(line, distance)[1])
+    else: # If pieces is more than 3 we star to cut the line in the number of pieces
+        # We use a loop  from the first to the penultimate piece 
+        for i in range(1, pieces): 
+            # The first piece is cut to save the result and the rest of the line
+            if i == 1:
+                distance = (line.length)/pieces #Distance is calculate as the lenght of the line divided by the number of pieces
+                lines_result.append(cut(line, distance)[0]) #We cut the line and save the first part in lines result
+                lines_to_cut = cut(line, distance)[1] #We save the rest of the line in lines to cut in order to continue with the split
+
+            #If pieces are equal to pieces minus two we can split the line and 
+            #save only the first part in lines result in order to continue with 
+            #the split
+            if  1 < i <= pieces - 2:
+                distance = (line.length)/pieces
+                lines_result.append(cut(lines_to_cut, distance)[0])
+                lines_to_cut = cut(lines_to_cut, distance)[1]
+
+            #Finally if pieces are equal to pieces minus 1 we can cut the line 
+            #and save both of the parts in lines result
+            if (i != 1) and (i == pieces-1):
+                distance = (line.length)/pieces
+                lines_result.append(cut(lines_to_cut, distance)[0])
+                lines_result.append(cut(lines_to_cut, distance)[1])
+
+    return lines_result
+
+
+#%%
+#I took the lines (LineString) of the geodataframe
+
+edge = trunk_union.reset_index()
+network_to_cut = edge.geometry
+
+results = []
+for j in range(0, len(network_to_cut)):
+    if network_to_cut[j].length > 1000:
+        line = network_to_cut[j]
+        pieces = int(((line.length)//1000)+1)
+        results.append(list(MultiCut(line, pieces)))
+
+
+#%%
+distances = pd.DataFrame(results).transpose()
+distances.columns = ['geom']
+gdf = gpd.GeoDataFrame(distances, geometry='geom', crs=all_nodes.crs)
+
+
+#%%
+'''
+def find_adjacent(line): # for finding adjacent features
+    outlist = []
+    outinds = []
+    outset = set()
+    for j, l in line.iteritems():
+        as_set = set(line.astype(str))
+        inds = []
+        for k in outset.copy():
+            if outlist[k] & as_set:
+                outset.remove(k)
+                as_set |= outlist[k]
+                inds.extend(outinds[k])
+        outset.add(j)
+        outlist.append(as_set)
+        outinds.append(inds + [j])
+    outinds = [outinds[j] for j in outset]
+    del outset, outlist
+    result = [[line[j] for j in k] for k in outinds]
+    return result
+
+lines = find_adjacent(trunk.geometry)
+'''
+
+
+#%%
+'''
+already_processed = []
+for feat in trunk:
+    attrs = feat.attributes()
+    geom = feat.geometry()
+    curr_id = feat["highway"]
+    if curr_id not in already_processed:
+        query = '"highway" = %s' % (curr_id)
+        selection = layer.getFeatures(QgsFeatureRequest().setFilterExpression(query))
+        selected_ids = [k.geometry().asPolyline() for k in selection]
+        adjacent_feats = find_adjacent(selected_ids)
+        for f in adjacent_feats:
+            first = True
+            for x in xrange(0, len(f)):
+                geom = (QgsGeometry.fromPolyline([QgsPoint(w) for w in f[x]]))
+                if first:
+                    outFeat = QgsFeature()
+                    outFeat.setGeometry(geom)
+                    outGeom = outFeat.geometry()
+                    first = False
+                else:
+                    outGeom = outGeom.combine(geom)
+            outFeat.setAttributes(attrs)
+            outFeat.setGeometry(outGeom)
+            prov.addFeatures([outFeat])
+        already_processed.append(curr_id)
+    else:
+        continue
+'''
 
 
 #%%
@@ -160,18 +254,6 @@ all_edges['norm_bc'] = (all_edges['bc']-all_edges['bc'].min())/(all_edges['bc'].
 
 all_edges['centrality_avg'] = (all_edges['norm_cc'] + all_edges['norm_cc']) / 2
 
-'''
-edges.plot('norm_cc', label='cc', cmap='RdYlBu_r', legend=True)
-edges.plot('norm_bc', label='bc', cmap='RdYlBu_r', legend=True)
-edges.plot('centrality_avg', label='avg', cmap='RdYlBu_r', legend=True)
-'''
-
-
-#%%
-# copy all_edges centrality value to main_edges for main roads
-
-
-
 
 #%%
 ########################################################################################
@@ -188,7 +270,6 @@ for country in pycountry.countries:
         iso_code = country.alpha_3
 
 #%%
-
 products = Product(iso_code)  # Where instead of NPL it could be any valid ISO code.
 #  to list all the products for NPL
 #for p in products:
@@ -282,7 +363,7 @@ buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 #%%
 
 # calculating zonal statistics
-pop_means = rasterstats.zonal_stats(main_edges, pop_count_array, 
+pop_means = rasterstats.zonal_stats(gdf, pop_count_array, 
                                             affine = affine,
                                             nodata = np.nan,
                                             stats = ['mean'],
@@ -298,19 +379,22 @@ while i < len(pop_means):
 
 
 #%%
-'''
+
 # transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
 pop_mean = pd.DataFrame(pop_mean_list)
-pop_mean = pop_mean.set_index(main_edges.index)
-main_edges['pop_mean'] = pop_mean['mean']
-main_edges['norm_pop'] = (main_edges['pop_mean']-main_edges['pop_mean'].min())/(main_edges['pop_mean'].max()-main_edges['pop_mean'].min())
-main_edges['si_quantile'] = main_edges['centrality_avg'] + main_edges['norm_pop']
-'''
+pop_mean = pop_mean.set_index(gdf.index)
+gdf['pop_mean'] = pop_mean['mean']
+
+#%%
+cut_network = gpd.sjoin(gdf, all_edges, how="inner", predicate="overlaps")
+#cut_network.rename(columns={"pop_mean_left": "pop_mean"})      doesn't work for whatever reason
+cut_network['norm_pop'] = (cut_network['pop_mean_left']-cut_network['pop_mean_left'].min())/(cut_network['pop_mean_left'].max()-cut_network['pop_mean_left'].min())
+cut_network['si_quantile'] = cut_network['centrality_avg'] + cut_network['norm_pop']
 
 
 #%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
-main_edges['si_score'] = pd.qcut(main_edges['si_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+cut_network['si_score'] = pd.qcut(cut_network['si_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
 
 '''
 edges.plot('norm_cc', label='centrality', cmap='RdYlBu_r', legend=True)
@@ -391,23 +475,18 @@ with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
 
 #%%
 # get zonal statistics to get predominant land covers
-main_edges['land_cover_unique'] = zonal_stats(main_edges, 
+cut_network['land_cover_unique'] = zonal_stats(cut_network, 
                                            lc_proj_clip_tif,
                                            categorical=True)
 
-main_edges
 
 #%%
 # land_cover codes: settlement: 6 + cropland: 7
 # order important to assign higher value first
-main_edges["land_cover_score"] = np.select([main_edges["land_cover_unique"].astype(str).str.contains(r"6:"), main_edges["land_cover_unique"].astype(str).str.contains(r"7:")], 
+cut_network["land_cover_score"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:"), cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
                                             [0.5, 0.3], 
                                             0)
 
-'''
-##### Land cover download
-https://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729
-'''
 
 #%%
 
@@ -570,10 +649,4 @@ for col in edges.columns:
 #
 #
 #
-#
-#
-#
-# main_edges.to_file('dataframe.shp')
-# datos = gpd.read_file(all_edges, encoding='latin1')
-# gdf_df.to_file('buildings.shp')
-# buffered.to_file('buffered.shp')
+join.to_file('join.shp')
