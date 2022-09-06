@@ -71,7 +71,6 @@ cf = '["highway"~"trunk|primary|tertiary"]'
 main_network = ox.graph_from_place(study_area,
                         simplify=False, 
                         custom_filter=cf)
-#fig, ax = ox.plot_graph(G)
 
 main_network_proj = ox.project_graph(main_network)
 main_nodes, main_edges = ox.graph_to_gdfs(main_network_proj,
@@ -79,6 +78,7 @@ main_nodes, main_edges = ox.graph_to_gdfs(main_network_proj,
                                 edges=True)
 
 main_edges = main_edges[main_edges['reversed'].isin([0])]
+
 
 #%%
 trunk = main_edges[main_edges['highway'].isin(['trunk'])]
@@ -159,8 +159,6 @@ def MultiCut(line, pieces):
 
 
 #%%
-#I took the lines (LineString) of the geodataframe
-
 edge = trunk_union.reset_index()
 network_to_cut = edge.geometry
 
@@ -173,9 +171,9 @@ for j in range(0, len(network_to_cut)):
 
 
 #%%
-distances = pd.DataFrame(results).transpose()
-distances.columns = ['geom']
-gdf = gpd.GeoDataFrame(distances, geometry='geom', crs=all_nodes.crs)
+trunks = pd.DataFrame(trunk_results).transpose()
+trunks.columns = ['geom']
+gdf = gpd.GeoDataFrame(trunks, geometry='geom', crs=all_nodes.crs)
 
 
 #%%
@@ -253,6 +251,7 @@ all_edges['bc'] = pd.DataFrame.from_dict(BC, orient='index')
 all_edges['norm_bc'] = (all_edges['bc']-all_edges['bc'].min())/(all_edges['bc'].max()-all_edges['bc'].min())
 
 all_edges['centrality_avg'] = (all_edges['norm_cc'] + all_edges['norm_cc']) / 2
+all_edges['norm_centrality'] = (all_edges['centrality_avg']-all_edges['centrality_avg'].min())/(all_edges['centrality_avg'].max()-all_edges['centrality_avg'].min())
 
 
 #%%
@@ -387,20 +386,13 @@ gdf['pop_mean'] = pop_mean['mean']
 
 #%%
 cut_network = gpd.sjoin(gdf, all_edges, how="inner", predicate="overlaps")
-#cut_network.rename(columns={"pop_mean_left": "pop_mean"})      doesn't work for whatever reason
-cut_network['norm_pop'] = (cut_network['pop_mean_left']-cut_network['pop_mean_left'].min())/(cut_network['pop_mean_left'].max()-cut_network['pop_mean_left'].min())
+cut_network['norm_pop'] = (cut_network['pop_mean']-cut_network['pop_mean'].min())/(cut_network['pop_mean'].max()-cut_network['pop_mean'].min())
 cut_network['si_quantile'] = cut_network['centrality_avg'] + cut_network['norm_pop']
 
 
 #%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
 cut_network['si_score'] = pd.qcut(cut_network['si_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
-
-'''
-edges.plot('norm_cc', label='centrality', cmap='RdYlBu_r', legend=True)
-edges.plot('norm_pop', label='population', cmap='RdYlBu_r', legend=True)
-edges.plot('si_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
-'''
 
 
 #%%
@@ -483,9 +475,17 @@ cut_network['land_cover_unique'] = zonal_stats(cut_network,
 #%%
 # land_cover codes: settlement: 6 + cropland: 7
 # order important to assign higher value first
-cut_network["land_cover_score"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:"), cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
+cut_network["lc_score"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:"), cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
                                             [0.5, 0.3], 
                                             0)
+
+
+#%%
+'''
+cut_network['li_quantile'] = (cut_network['lc_score']-cut_network['lc_score'].min())/(cut_network['lc_score'].max()-cut_network['lc_score'].min())
+# qcut: quantile-based discretization to assign scores from 1 to 5 to land-covervalues
+cut_network['li_score'] = pd.qcut(cut_network['li_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+'''
 
 
 #%%
@@ -505,7 +505,6 @@ west, south, east, north = aoi.unary_union.buffer(0.1).bounds
 
 #%%
 # Select a postal code area representing the city center of Helsinki
-
 def intersect_using_spatial_index(source_gdf, intersecting_gdf):
     """
     Conduct spatial intersection using spatial index for candidates GeoDataFrame to make queries faster.
@@ -529,21 +528,19 @@ def intersect_using_spatial_index(source_gdf, intersecting_gdf):
     result = possible_matches.loc[possible_matches.intersects(intersecting_gdf.unary_union)]
     return result
 
+
 #%%
+'''
 # Test the spatial query with spatial index
 list = intersect_using_spatial_index(source_gdf=gdf_centroid, intersecting_gdf=buffered)
 
-
-
-
-
-
-
-
 # generate spatial index
 sindex = buffered.sindex
+'''
+
 
 #%%
+'''
 # define empty list for results
 results_list = []
 # iterate over the points
@@ -556,12 +553,10 @@ for index, row in gdf_df.iterrows():
     results_list.append(len(precise_matches))
 # add list of results as a new column
 gdf_df['polygons'] = pd.Series(results_list)
-
-
-#%%
-
 '''
 
+#%%
+'''
 fig, ax = plt.subplots(figsize=(12,8))
 # Plot edges and nodes
 edges.plot(ax=ax, linewidth=0.75, color='gray')
@@ -616,6 +611,7 @@ def apply_tariff_iterrows(building_centroids):
 
 '''
 
+
 #%%%
 '''
 ###################### ELEVATION GRADES ### not sure if this is useful eventually
@@ -633,7 +629,6 @@ fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#3
 
 
 #%%
-
 '''
 for col in edges.columns:
     if any(isinstance(val, list) for val in edges[col]):
@@ -649,4 +644,15 @@ for col in edges.columns:
 #
 #
 #
-join.to_file('join.shp')
+
+#cut_network = cut_network.pop('name')
+#cut_network = cut_network.pop('osmid')
+
+for col in cut_network.columns:
+    if any(isinstance(val, list) for val in cut_network[col]):
+        print('Column: {0}, has a list in it'.format(col))
+
+cut_network['name'] = cut_network['name'].apply(lambda x: ' '.join(x))
+cut_network['osmid'] = cut_network['osmid'].astype(str)
+
+cut_network.to_file('cut_network.shp')
