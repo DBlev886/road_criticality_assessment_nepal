@@ -3,7 +3,7 @@
 Created on Sun May  8 12:04:30 2022
 
 @author: Danny Baldig
-title: "Automating criticality assessments of rural road networks in Nepal" 
+title: "Automating criticality assessments of rural road networks in Nepal"
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 venv\scripts\activate
@@ -20,16 +20,16 @@ population_type = "" # ("constrained": for official population counts or "UNadj_
 
 import osmnx as ox
 import networkx as nx
+import pandas as pd
 import geopandas as gpd
 import shapely
 import rasterio as rio
 from rasterio.mask import mask
-import rasterstats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-import pandas as pd
+import rasterstats
+from rasterstats import zonal_stats
 from pyproj import CRS
 import numpy as np
-from rasterstats import zonal_stats
 from shapely import speedups
 speedups.enabled
 from shapely.geometry import Point, LineString
@@ -39,7 +39,7 @@ import requests
 
 
 #%%
-pd.set_option('display.max_colwidth', None)
+pd.set_option('display.max_colwidth', 50)
 
 
 #%%
@@ -58,11 +58,12 @@ all_nodes, all_edges = ox.graph_to_gdfs(full_network_proj,
                             nodes=True,
                             edges=True)
 
-'''edges = edges.drop(
+
+all_edges = all_edges.drop(
                 ["lanes",
                  "maxspeed",
                  "access"], 
-                 axis=1)'''
+                 axis=1)
 
 
 #%%
@@ -71,14 +72,14 @@ cf = '["highway"~"trunk|primary|tertiary"]'
 main_network = ox.graph_from_place(study_area,
                         simplify=False, 
                         custom_filter=cf)
+#fig, ax = ox.plot_graph(G)
 
 main_network_proj = ox.project_graph(main_network)
 main_nodes, main_edges = ox.graph_to_gdfs(main_network_proj,
                                 nodes=True,
                                 edges=True)
 
-main_edges = main_edges[main_edges['reversed'].isin([0])]
-
+#main_edges = main_edges[main_edges['reversed'].isin([0])]
 
 #%%
 trunk = main_edges[main_edges['highway'].isin(['trunk'])]
@@ -159,21 +160,36 @@ def MultiCut(line, pieces):
 
 
 #%%
-edge = trunk_union.reset_index()
-network_to_cut = edge.geometry
+trunk_union = trunk_union.reset_index()
+trunk_to_cut = trunk_union.geometry
 
-results = []
-for j in range(0, len(network_to_cut)):
-    if network_to_cut[j].length > 1000:
-        line = network_to_cut[j]
+trunk_results = []
+for j in range(0, len(trunk_to_cut)):
+    if trunk_to_cut[j].length > 1000:
+        line = trunk_to_cut[j]
         pieces = int(((line.length)//1000)+1)
-        results.append(list(MultiCut(line, pieces)))
+        trunk_results.append(list(MultiCut(line, pieces)))
 
+
+#%%
+primary_union = primary_union.reset_index()
+primary_to_cut = primary_union.geometry
+
+primary_results = []
+for j in range(0, len(primary_to_cut)):
+    if primary_to_cut[j].length > 1000:
+        line = primary_to_cut[j]
+        pieces = int(((line.length)//1000)+1)
+        primary_results.append(list(MultiCut(line, pieces)))
 
 #%%
 trunks = pd.DataFrame(trunk_results).transpose()
 trunks.columns = ['geom']
-gdf = gpd.GeoDataFrame(trunks, geometry='geom', crs=all_nodes.crs)
+primary = pd.DataFrame(primary_results).transpose()
+primary.columns = ['geom']
+frames = [trunks, primary]
+cut_edges = pd.concat(frames)
+cut_edges = gpd.GeoDataFrame(cut_edges, geometry='geom', crs=all_nodes.crs)
 
 
 #%%
@@ -362,7 +378,7 @@ buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
 #%%
 
 # calculating zonal statistics
-pop_means = rasterstats.zonal_stats(gdf, pop_count_array, 
+pop_means = rasterstats.zonal_stats(cut_edges, pop_count_array, 
                                             affine = affine,
                                             nodata = np.nan,
                                             stats = ['mean'],
@@ -381,19 +397,56 @@ while i < len(pop_means):
 
 # transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
 pop_mean = pd.DataFrame(pop_mean_list)
-pop_mean = pop_mean.set_index(gdf.index)
-gdf['pop_mean'] = pop_mean['mean']
+pop_mean = pop_mean.set_index(cut_edges.index)
+cut_edges['pop_mean'] = pop_mean['mean']
 
 #%%
-cut_network = gpd.sjoin(gdf, all_edges, how="inner", predicate="overlaps")
+cut_network = gpd.sjoin(cut_edges, all_edges, how="inner", predicate="overlaps")
 cut_network['norm_pop'] = (cut_network['pop_mean']-cut_network['pop_mean'].min())/(cut_network['pop_mean'].max()-cut_network['pop_mean'].min())
 cut_network['si_quantile'] = cut_network['centrality_avg'] + cut_network['norm_pop']
 
-
-#%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
 cut_network['si_score'] = pd.qcut(cut_network['si_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
 
+
+#%%
+
+def unique_list(a_list):
+    seen = set()
+    for x in a_list:
+        key = repr(x)
+        if key not in seen:
+            seen.add(key)
+            print(x)
+
+unique_list(all_edges['highway'])
+
+#print(all_edges['highway'].unique())
+
+#%%
+low_roads = all_edges[all_edges["highway"].isin(['trunk', 'primary', 'tertiary']) == False]
+
+
+#%%
+#unclassified.to_file('unclassified.shp')
+#residential.to_file('residential.shp')
+#living_street.to_file('living_street.shp')
+#road.to_file('road.shp')
+
+#%%
+'''
+from shapely.ops import split
+#result = split(unclassified, main_nodes.any())
+resutls['geom'] = unclassified['geometry'].apply(split, main_nodes['geometry'].any())
+'''
+
+
+#%%
+'''
+unclassified_union = unclassified.unary_union
+#unclassified_union = shapely.ops.linemerge(unclassified_union)
+unclassified_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[unclassified_union])
+'''
 
 #%%
 ########################################################################################
@@ -475,9 +528,21 @@ cut_network['land_cover_unique'] = zonal_stats(cut_network,
 #%%
 # land_cover codes: settlement: 6 + cropland: 7
 # order important to assign higher value first
-cut_network["lc_score"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:"), cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
-                                            [0.5, 0.3], 
+cut_network["settlement"] =      np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:")], 
+                                            [0.5], 
                                             0)
+
+cut_network["cultivated_land"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
+                                            [0.3], 
+                                            0)
+
+cut_network["intersection"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
+                                            [0.3], 
+                                            0)
+
+
+list = cut_network.buffer(100).intersection(all_nodes)
+#list = cut_network['geom'].intersects(all_nodes)
 
 
 #%%
@@ -528,6 +593,30 @@ def intersect_using_spatial_index(source_gdf, intersecting_gdf):
     result = possible_matches.loc[possible_matches.intersects(intersecting_gdf.unary_union)]
     return result
 
+
+#%%
+'''
+from pyrosm import OSM, get_data
+
+fp = get_data("Nepal", update=True)
+osm = OSM(fp)
+bbox_geom = aoi['geometry']
+osm = OSM(fp, bounding_box=bbox_geom)
+lu_aoi = osm.get_landuse()
+'''
+
+#%%
+'''
+# Read landuse
+# ============
+from pyrosm import OSM
+from pyrosm import get_data
+fp = get_data(aoi)
+# Initialize the OSM parser object
+osm = OSM(fp)
+landuse = osm.get_landuse()
+landuse.plot(column='landuse', legend=True, figsize=(10,6))
+'''
 
 #%%
 '''
@@ -648,11 +737,29 @@ for col in edges.columns:
 #cut_network = cut_network.pop('name')
 #cut_network = cut_network.pop('osmid')
 
-for col in cut_network.columns:
+for col in all_edges.columns:
     if any(isinstance(val, list) for val in cut_network[col]):
         print('Column: {0}, has a list in it'.format(col))
 
+
+#%%
 cut_network['name'] = cut_network['name'].apply(lambda x: ' '.join(x))
 cut_network['osmid'] = cut_network['osmid'].astype(str)
 
 cut_network.to_file('cut_network.shp')
+
+all_nodes.to_file('all_nodes.shp')
+
+all_edges['name'] = all_edges['name'].astype(str)
+all_edges['highway'] = all_edges['highway'].astype(str)
+all_edges['reversed'] = all_edges['reversed'].astype(str)
+all_edges['osmid'] = all_edges['osmid'].astype(str)
+
+
+for col in all_edges.columns:
+    if any(isinstance(val, list) for val in all_edges[col]):
+        print('Column: {0}, has a list in it'.format(col))
+
+
+all_edges.to_file('all_edges.shp')
+main_nodes.to_file('main_nodes.shp')
