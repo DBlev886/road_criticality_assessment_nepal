@@ -911,7 +911,7 @@ for branch in branches['features']:
 _ = plt.title('Channel network (>100 accumulation)', size=14)
 
 
-# %%
+# %% check significance of HAND
 # Compute height above nearest drainage
 hand = grid.compute_hand(fdir, dem, acc > 200)
 # Create a view of HAND in the catchment
