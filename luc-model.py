@@ -293,4 +293,3 @@ if failed_ids:
 
 # %% >>> Visualize the patches
 EOPatch.load('./eopatches/eopatch_0/')
-
