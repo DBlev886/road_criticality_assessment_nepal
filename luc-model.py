@@ -1,8 +1,4 @@
 # %%
-# Jupyter notebook related
-%reload_ext autoreload
-%autoreload 2
-%matplotlib inline
 
 import datetime
 import itertools
@@ -260,7 +256,7 @@ workflow.dependency_graph()
 
 
 # %% >>>
-%%time
+# %%time
 
 # Time interval for the SH request
 time_interval = ["2019-01-01", "2019-12-31"]
