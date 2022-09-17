@@ -1,92 +1,99 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Sun May  8 12:04:30 2022
+# Created on Sun May  8 12:04:30 2022
 
-@author: Danny Baldig
-title: "Automating criticality assessments of rural road networks in Nepal" 
+# @author: Danny Baldig
+# title: "Automating criticality assessments of rural road networks in Nepal"
 
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-venv\scripts\activate
-"""
 
-#%%
-########################################################################################
-################################## INPUTS AND IMPORTS ##################################
-########################################################################################
-download_path ='C:/Users/Danny/Desktop/EMMA/IV/Data/' # enter path for (temporary) downloads
-lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif" # path of land cover raster; trying to automate this later but download is behind log-in wall, so that requires an account for every user
-study_area = (["Beni, Nepal", "Jaljala, Nepal"])    # Use OSM Nominatim in comma-seperated strings: https://nominatim.openstreetmap.org/ui/search.html
-population_type = "" # ("constrained": for official population counts or "UNadj_constrained" for UN adjusted population counts)
-
+# %% >>> inputs and environment setup
 import osmnx as ox
 import networkx as nx
+import pandas as pd
 import geopandas as gpd
 import shapely
 import rasterio as rio
 from rasterio.mask import mask
-import rasterstats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-import pandas as pd
+import rasterstats
+from rasterstats import zonal_stats
 from pyproj import CRS
 import numpy as np
-from rasterstats import zonal_stats
 from shapely import speedups
-speedups.enabled
 from shapely.geometry import Point, LineString
 import pycountry
 from wpgpDownload.utils.wpcsv import Product
 import requests
+import matplotlib.pyplot as plt
+from matplotlib import colors
+import seaborn as sns
+from pysheds.grid import Grid
+from rasterio.features import rasterize
+import requests as r
+import getpass
+# import pprint
+# import time
+# import os
+# import cgi
+# import json
+
+speedups.enabled
+
+# path for (temporary) downloads
+download_path = 'C:/Users/Danny/Desktop/EMMA/IV/Data/'
+# path of land cover raster >>> AUTOMATIZE LATER
+lc_path = "C:/Users/Danny/Desktop/EMMA/IV/Data/Land_cover/data/LandCover_NP_2019.tif"
+# define study area according to OSM Nominatim (comma-seperated strings for
+# several selection)s: https://nominatim.openstreetmap.org/ui/search.html
+study_area = (["Beni, Nepal", "Jaljala, Nepal"])
+# "constrained": for official population counts or
+# "UNadj_constrained" for UN adjusted population counts
+population_type = ""
 
 
-#%%
-pd.set_option('display.max_colwidth', None)
+# %% set dataframe width for visualization
+pd.set_option('display.max_colwidth', 50)
 
 
-#%%
-########################################################################################
-############################ RETRIEVE AND PROCESS OSM-DATA #############################
-########################################################################################
-
-################################# FETCH WHOLE NETWORK ##################################
+# %% >>> SOCIO-ECONOMIC IMPORTANCE
+# fetch whole network for defined study area
 full_network = ox.graph_from_place(study_area,
-                            network_type="drive",
-                            clean_periphery=True)
+                                   network_type="drive",
+                                   clean_periphery=True)
 
 # project the data
 full_network_proj = ox.project_graph(full_network)
 all_nodes, all_edges = ox.graph_to_gdfs(full_network_proj,
-                            nodes=True,
-                            edges=True)
+                                        nodes=True,
+                                        edges=True)
 
-'''edges = edges.drop(
+all_edges = all_edges.drop(
                 ["lanes",
                  "maxspeed",
-                 "access"], 
-                 axis=1)'''
+                 "access"],
+                axis=1)
 
 
-#%%
-################################# FETCH ONLY MAIN ROADS #################################
+# %% fetch only main roads
 cf = '["highway"~"trunk|primary|tertiary"]'
 main_network = ox.graph_from_place(study_area,
-                        simplify=False, 
-                        custom_filter=cf)
-#fig, ax = ox.plot_graph(G)
+                                   simplify=False,
+                                   custom_filter=cf)
+# fig, ax = ox.plot_graph(G)
 
 main_network_proj = ox.project_graph(main_network)
 main_nodes, main_edges = ox.graph_to_gdfs(main_network_proj,
-                                nodes=True,
-                                edges=True)
+                                          nodes=True,
+                                          edges=True)
 
-main_edges = main_edges[main_edges['reversed'].isin([0])]
+# main_edges = main_edges[main_edges['reversed'].isin([0])]
 
-#%%
+# %% filter for each main road type
 trunk = main_edges[main_edges['highway'].isin(['trunk'])]
 primary = main_edges[main_edges['highway'].isin(['primary'])]
 tertiary = main_edges[main_edges['highway'].isin(['tertiary'])]
 
 
-#%%
+# %% merge edges to one linestring
 trunk_union = trunk.unary_union
 trunk_union = shapely.ops.linemerge(trunk_union)
 trunk_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[trunk_union])
@@ -100,7 +107,7 @@ tertiary_union = shapely.ops.linemerge(tertiary_union)
 tertiary_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[tertiary_union])
 
 
-#%%
+# %% define cut-function
 def cut(line, distance):
     # Cuts a line in two at a distance from its starting point
     if distance <= 0.0 or distance >= line.length:
@@ -118,38 +125,35 @@ def cut(line, distance):
                     LineString(coords[:i] + [(cp.x, cp.y)]),
                     LineString([(cp.x, cp.y)] + coords[i:])]
 
-
 def MultiCut(line, pieces):
-    #Firts we need to define two list to append the results (lines) and the lines to cut
-    lines_result = [] #All the lines are add to this list
-    lines_to_cut = [] #The lines to cut are add to this list
+    # define empty lists to append filtered lines and lines to cut
+    lines_result = []
+    lines_to_cut = []
 
-    #We must ensure that pieces are higher than 2
-    if pieces == 1: #If pieces are 1 the result is the same line
-        lines_result.append(line) 
-    elif pieces == 2: #If pieces are 2 the result is the line cut by the middle point
+    # ensure that there are at least two pieces
+    if pieces == 1:  # result equals same line if one pieces
+        lines_result.append(line)
+    elif pieces == 2:  # cut line by middle point if two pieces
         distance = (line.length)/pieces
         lines_result.append(cut(line, distance)[0])
         lines_result.append(cut(line, distance)[1])
-    else: # If pieces is more than 3 we star to cut the line in the number of pieces
-        # We use a loop  from the first to the penultimate piece 
-        for i in range(1, pieces): 
-            # The first piece is cut to save the result and the rest of the line
+    else:  # cut line in number of pieces if more than three pieces
+        # loop  from first to penultimate piece
+        for i in range(1, pieces):
+            # first piece is cut to save result and rest of line
             if i == 1:
-                distance = (line.length)/pieces #Distance is calculate as the lenght of the line divided by the number of pieces
-                lines_result.append(cut(line, distance)[0]) #We cut the line and save the first part in lines result
-                lines_to_cut = cut(line, distance)[1] #We save the rest of the line in lines to cut in order to continue with the split
+                distance = (line.length)/pieces  # distance equals line lenght divided by number of pieces
+                lines_result.append(cut(line, distance)[0])  # cut line and save first part in lines_result
+                lines_to_cut = cut(line, distance)[1]  # save rest of line in lines_to_cut to continue with split
 
-            #If pieces are equal to pieces minus two we can split the line and 
-            #save only the first part in lines result in order to continue with 
-            #the split
-            if  1 < i <= pieces - 2:
+            # split line if pieces equal to pieces minus two; save only first part in lines_result
+            # to continue with split
+            if 1 < i <= pieces - 2:
                 distance = (line.length)/pieces
                 lines_result.append(cut(lines_to_cut, distance)[0])
                 lines_to_cut = cut(lines_to_cut, distance)[1]
 
-            #Finally if pieces are equal to pieces minus 1 we can cut the line 
-            #and save both of the parts in lines result
+            # finally cut line if pieces  equal to pieces minus 1 and save both parts in lines_result
             if (i != 1) and (i == pieces-1):
                 distance = (line.length)/pieces
                 lines_result.append(cut(lines_to_cut, distance)[0])
@@ -158,27 +162,40 @@ def MultiCut(line, pieces):
     return lines_result
 
 
-#%%
-#I took the lines (LineString) of the geodataframe
+# %%
+trunk_union = trunk_union.reset_index()
+trunk_to_cut = trunk_union.geometry
 
-edge = trunk_union.reset_index()
-network_to_cut = edge.geometry
-
-results = []
-for j in range(0, len(network_to_cut)):
-    if network_to_cut[j].length > 1000:
-        line = network_to_cut[j]
+trunk_results = []
+for j in range(0, len(trunk_to_cut)):
+    if trunk_to_cut[j].length > 1000:
+        line = trunk_to_cut[j]
         pieces = int(((line.length)//1000)+1)
-        results.append(list(MultiCut(line, pieces)))
+        trunk_results.append(list(MultiCut(line, pieces)))
 
 
-#%%
-distances = pd.DataFrame(results).transpose()
-distances.columns = ['geom']
-gdf = gpd.GeoDataFrame(distances, geometry='geom', crs=all_nodes.crs)
+# %%
+primary_union = primary_union.reset_index()
+primary_to_cut = primary_union.geometry
+
+primary_results = []
+for j in range(0, len(primary_to_cut)):
+    if primary_to_cut[j].length > 1000:
+        line = primary_to_cut[j]
+        pieces = int(((line.length)//1000)+1)
+        primary_results.append(list(MultiCut(line, pieces)))
+
+# %%
+trunks = pd.DataFrame(trunk_results).transpose()
+trunks.columns = ['geom']
+primary = pd.DataFrame(primary_results).transpose()
+primary.columns = ['geom']
+frames = [trunks, primary]
+cut_edges = pd.concat(frames)
+cut_edges = gpd.GeoDataFrame(cut_edges, geometry='geom', crs=all_nodes.crs)
 
 
-#%%
+# %%
 '''
 def find_adjacent(line): # for finding adjacent features
     outlist = []
@@ -204,7 +221,7 @@ lines = find_adjacent(trunk.geometry)
 '''
 
 
-#%%
+# %%
 '''
 already_processed = []
 for feat in trunk:
@@ -236,30 +253,21 @@ for feat in trunk:
 '''
 
 
-#%%
-
-########################################################################################
-######################## ASSIGN STRATEGICAL IMPORTANCE SCORES ##########################
-########################################################################################
-
-###### ASSIGN CENTRALITY SCORES
-### normalize centrality values to summarize them with population later to create quantiles
+# %% >>> ASSIGN STRATEGICAL IMPORTANCE SCORES
+# normalize centrality values to summarize them with population later to create quantiles
 CC = nx.closeness_centrality(nx.line_graph(full_network_proj))
 all_edges['cc'] = pd.DataFrame.from_dict(CC, orient='index')
 all_edges['norm_cc'] = (all_edges['cc']-all_edges['cc'].min())/(all_edges['cc'].max()-all_edges['cc'].min())
 
-BC = nx.betweenness_centrality(nx.line_graph(full_network_proj))#, weight="length")
+BC = nx.betweenness_centrality(nx.line_graph(full_network_proj))  #, weight="length")
 all_edges['bc'] = pd.DataFrame.from_dict(BC, orient='index')
 all_edges['norm_bc'] = (all_edges['bc']-all_edges['bc'].min())/(all_edges['bc'].max()-all_edges['bc'].min())
 
 all_edges['centrality_avg'] = (all_edges['norm_cc'] + all_edges['norm_cc']) / 2
+all_edges['norm_centrality'] = (all_edges['centrality_avg']-all_edges['centrality_avg'].min())/(all_edges['centrality_avg'].max()-all_edges['centrality_avg'].min())
 
 
-#%%
-########################################################################################
-################################## POPULATION RASTER ###################################
-########################################################################################
-
+# >>> population raster
 # identify ISO country code to automatically download population raster based on OSM-input
 if not download_path.endswith("/"):
     download_path = download_path + "/"
@@ -269,21 +277,19 @@ for country in pycountry.countries:
     if country.name in study_area_str:
         iso_code = country.alpha_3
 
-#%%
+# %%
 products = Product(iso_code)  # Where instead of NPL it could be any valid ISO code.
 #  to list all the products for NPL
-#for p in products:
-#    if "2020" in p.dataset_name: 
+# for p in products:
+#    if "2020" in p.dataset_name:
 #        print('%s/%s\t%s\t%s' % (p.idx, p.country_name,p.dataset_name,p.path))
 
 prod_name_input = "ppp_2020" + population_type
 
-#dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
+# dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
 
-#%%
-# define boundaries to mask raster
-### buffer distance crucial to connect roads on the outside and to allow connectivitiy between multiple administrative units
+# %% define boundaries to mask raster
 aoi = ox.geocode_to_gdf(study_area)
 aoi = aoi.dissolve()
 aoi = aoi.to_crs(CRS(all_nodes.crs))
@@ -292,9 +298,7 @@ aoi_file = download_path + "aoi.shp"
 aoi.to_file(aoi_file)
 
 
-#%%
-# open downloaded raster, reproject, and mask with aoi boundary
-# ERROR even though file is not opened somewhere else: CPLE_AppDefinedError: Deleting C:/Users/Danny/Desktop/EMMA/IV/Data/Population/npl_ppp_2020_UNadj_clipped.tif failed: Permission denied
+# %% open downloaded raster, reproject, and mask with aoi boundary
 raster_crs = CRS(aoi.crs).to_epsg()
 mask_coords = aoi['geometry']
 file_name = iso_code + "_" + prod_name_input + ".tif"
@@ -305,7 +309,7 @@ pop_idx = pop_path.index(file_substr)
 pop_proj_tif = pop_path[:pop_idx] + "_reproj" + pop_path[pop_idx:]
 pop_proj_clip_tif = pop_proj_tif[:pop_idx] + "_clipped" + pop_proj_tif[pop_idx:]
 
-#%%
+# %%
 with rio.open(pop_path, mode='r+') as pop:
     transform, width, height = calculate_default_transform(
         pop.crs, raster_crs, pop.width, pop.height, *pop.bounds)
@@ -325,49 +329,44 @@ with rio.open(pop_path, mode='r+') as pop:
                 resampling=Resampling.nearest)
 
 
-#%%
+# %%
 with rio.open(pop_proj_tif) as pop_proj:
     pop_out_image, out_transform = rio.mask.mask(pop_proj, aoi.geometry, crop=True)
     pop_out_meta = pop_proj.meta
 
 pop_out_meta.update({"driver": "GTiff",
-                 "height": pop_out_image.shape[1],
-                 "width": pop_out_image.shape[2],
-                 "transform": out_transform})
+                     "height": pop_out_image.shape[1],
+                     "width": pop_out_image.shape[2],
+                     "transform": out_transform})
 
 with rio.open(pop_proj_clip_tif, "w", **pop_out_meta) as pop_dest:
     pop_dest.write(pop_out_image)
 
-#pop_dest.close() # close the rasterio dataset
+# pop_dest.close() # close the rasterio dataset
 
 
-#%%
-# read clipped population raster and assign values to numpy nd array
-#pop_count =  rio.open(clipped)
+# %% read clipped population raster and assign values to numpy nd array
+# pop_count =  rio.open(clipped)
 pop_raster = rio.open(pop_proj_clip_tif)
 pop_count_array = pop_raster.read(1)
 affine = pop_raster.transform
 
 
-#%%
-###################### BUFFER EDGES
-# buffer edges
-buffered = main_edges.buffer(100, 
-                            cap_style=2,        # flat
-                            join_style=2)       # mitre
+# %% buffer edges
+buffered = main_edges.buffer(100,
+                             cap_style=2,  # flat
+                             join_style=2)  # mitre
 buffered = gpd.GeoDataFrame(geometry=gpd.GeoSeries(buffered))
-#buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
-#buffered.plot()
+# buffered = buffered.dropna(axis=0, how=\"any\", thresh=None, subset=None, inplace=False)
+# buffered.plot()
 
 
-#%%
-
-# calculating zonal statistics
-pop_means = rasterstats.zonal_stats(gdf, pop_count_array, 
-                                            affine = affine,
-                                            nodata = np.nan,
-                                            stats = ['mean'],
-                                            geojson_out = True)
+# %% calculating zonal statistics
+pop_means = rasterstats.zonal_stats(cut_edges, pop_count_array,
+                                    affine=affine,
+                                    nodata=np.nan,
+                                    stats=['mean'],
+                                    geojson_out=True)
 
 # extract average population data from list
 pop_mean_list = []
@@ -378,38 +377,61 @@ while i < len(pop_means):
     i = i + 1
 
 
-#%%
-
-# transfer information from list to DataFrame and assign scores based on quantiles ## get NaN values if not converting index
+# %% create df and assign scores based on quantiles ## get NaN values if not converting index
 pop_mean = pd.DataFrame(pop_mean_list)
-pop_mean = pop_mean.set_index(gdf.index)
-gdf['pop_mean'] = pop_mean['mean']
+pop_mean = pop_mean.set_index(cut_edges.index)
+cut_edges['pop_mean'] = pop_mean['mean']
 
-#%%
-cut_network = gpd.sjoin(gdf, all_edges, how="inner", predicate="overlaps")
-#cut_network.rename(columns={"pop_mean_left": "pop_mean"})      doesn't work for whatever reason
-cut_network['norm_pop'] = (cut_network['pop_mean_left']-cut_network['pop_mean_left'].min())/(cut_network['pop_mean_left'].max()-cut_network['pop_mean_left'].min())
+# %%
+cut_network = gpd.sjoin(cut_edges, all_edges, how="inner", predicate="overlaps")
+cut_network['norm_pop'] = (cut_network['pop_mean']-cut_network['pop_mean'].min())/(cut_network['pop_mean'].max()-cut_network['pop_mean'].min())
 cut_network['si_quantile'] = cut_network['centrality_avg'] + cut_network['norm_pop']
 
-
-#%%%
 # qcut: quantile-based discretization to assign scores from 1 to 5 to centrality values
-cut_network['si_score'] = pd.qcut(cut_network['si_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+cut_network['si_score'] = pd.qcut(cut_network['si_quantile'], q=5, labels=[1, 2, 3, 4, 5]).astype(str)
 
+
+# %%
+
+def unique_list(a_list):
+    seen = set()
+    for x in a_list:
+        key = repr(x)
+        if key not in seen:
+            seen.add(key)
+            print(x)
+
+
+unique_list(all_edges['highway'])
+# print(all_edges['highway'].unique())
+
+# %%
+low_roads = all_edges[all_edges["highway"].isin(['trunk', 'primary', 'tertiary']) == False]
+
+
+# %%
+# unclassified.to_file('unclassified.shp')
+# residential.to_file('residential.shp')
+# living_street.to_file('living_street.shp')
+# road.to_file('road.shp')
+
+# %%
 '''
-edges.plot('norm_cc', label='centrality', cmap='RdYlBu_r', legend=True)
-edges.plot('norm_pop', label='population', cmap='RdYlBu_r', legend=True)
-edges.plot('si_score', label='strategic importance', cmap='RdYlBu_r', legend=True)
+from shapely.ops import split
+#result = split(unclassified, main_nodes.any())
+resutls['geom'] = unclassified['geometry'].apply(split, main_nodes['geometry'].any())
 '''
 
 
-#%%
-########################################################################################
-################################## LANDCOVER RASTER ####################################
-########################################################################################
+# %%
+'''
+unclassified_union = unclassified.unary_union
+#unclassified_union = shapely.ops.linemerge(unclassified_union)
+unclassified_union = gpd.GeoDataFrame(index=[0], crs=all_nodes.crs, geometry=[unclassified_union])
+'''
 
+# %% landcover raster
 # trying to automatize land cover download /// doesn't work yet
-
 site_url = 'http://rds.icimod.org/DatasetMasters/DownloadFile/19?metadataid=1972729'
 userid = 'danny.baldig@student.uibk.ac.at'
 password = 'icimodPW977'
@@ -424,18 +446,17 @@ s.get(site_url)
 # login to site.
 s.post(site_url, data={'_username': userid, '_password': password})
 # Next thing will be to visit URL for file you would like to download.
-r = s.get(file_url)
+lc_file = s.get(file_url)
 
 # Download file
 with open(o_file, 'wb') as output:
-    output.write(r.content)
+    output.write(lc_file.content)
 print(f"requests:: File {o_file} downloaded successfully!")
 
 # Close session once all work done
 s.close()
 
-#%%%
-
+# %%
 lc_idx = lc_path.index(file_substr)
 lc_proj_tif = lc_path[:lc_idx] + "_reproj" + lc_path[lc_idx:]
 lc_proj_clip_tif = lc_proj_tif[:lc_idx] + "_clipped" + lc_proj_tif[lc_idx:]
@@ -463,9 +484,9 @@ with rio.open(lc_proj_tif) as lc_proj:
     lc_out_meta = lc_proj.meta
 
 lc_out_meta.update({"driver": "GTiff",
-                 "height": lc_out_image.shape[1],
-                 "width": lc_out_image.shape[2],
-                 "transform": out_transform})
+                    "height": lc_out_image.shape[1],
+                    "width": lc_out_image.shape[2],
+                    "transform": out_transform})
 
 # output with wrong CRS again
 with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
@@ -473,29 +494,45 @@ with rio.open(lc_proj_clip_tif, "w", **lc_out_meta) as lc_dest:
     lc_dest.close()
 
 
-#%%
+# %%
 # get zonal statistics to get predominant land covers
-cut_network['land_cover_unique'] = zonal_stats(cut_network, 
-                                           lc_proj_clip_tif,
-                                           categorical=True)
+cut_network['land_cover_unique'] = zonal_stats(cut_network,
+                                               lc_proj_clip_tif,
+                                               categorical=True)
 
 
-#%%
+# %%
 # land_cover codes: settlement: 6 + cropland: 7
 # order important to assign higher value first
-cut_network["land_cover_score"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:"), cut_network["land_cover_unique"].astype(str).str.contains(r"7:")], 
-                                            [0.5, 0.3], 
+cut_network["settlement"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"6:")],
+                                      [0.5],
+                                      0)
+
+cut_network["cultivated_land"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"7:")],
+                                           [0.3],
+                                           0)
+
+'''
+cut_network["intersection"] = np.select([cut_network["land_cover_unique"].astype(str).str.contains(r"7:")],
+                                            [0.3],
                                             0)
+'''
+
+buffer = cut_network.buffer(100).intersection(all_nodes)
+# buffer = cut_network['geom'].intersects(all_nodes)
 
 
-#%%
+# %%
+'''
+cut_network['li_quantile'] = (cut_network['lc_score']-cut_network['lc_score'].min())/(cut_network['lc_score'].max()-cut_network['lc_score'].min())
+# qcut: quantile-based discretization to assign scores from 1 to 5 to land-covervalues
+cut_network['li_score'] = pd.qcut(cut_network['li_quantile'], q=5, labels=[1,2,3,4,5]).astype(str)
+'''
 
-########################################################################################
-########################### FOOTPRINTS / OTHERS FOR LATER ##############################
-########################################################################################
 
+# %% >>> footprints and other stuff for later
 gdf = ox.geometries_from_place(study_area,
-                               tags = {'building': True})
+                               tags={'building': True})
 gdf_proj = ox.project_gdf(gdf)
 
 gdf_centroid = gdf_proj.centroid
@@ -503,9 +540,7 @@ gdf_df = gpd.GeoDataFrame(geometry=gpd.GeoSeries(gdf_centroid))
 west, south, east, north = aoi.unary_union.buffer(0.1).bounds
 
 
-#%%
-# Select a postal code area representing the city center of Helsinki
-
+# %%
 def intersect_using_spatial_index(source_gdf, intersecting_gdf):
     """
     Conduct spatial intersection using spatial index for candidates GeoDataFrame to make queries faster.
@@ -529,21 +564,43 @@ def intersect_using_spatial_index(source_gdf, intersecting_gdf):
     result = possible_matches.loc[possible_matches.intersects(intersecting_gdf.unary_union)]
     return result
 
-#%%
+
+# %%
+'''
+from pyrosm import OSM, get_data
+
+fp = get_data("Nepal", update=True)
+osm = OSM(fp)
+bbox_geom = aoi['geometry']
+osm = OSM(fp, bounding_box=bbox_geom)
+lu_aoi = osm.get_landuse()
+'''
+
+# %%
+'''
+# Read landuse
+# ============
+from pyrosm import OSM
+from pyrosm import get_data
+fp = get_data(aoi)
+# Initialize the OSM parser object
+osm = OSM(fp)
+landuse = osm.get_landuse()
+landuse.plot(column='landuse', legend=True, figsize=(10,6))
+'''
+
+# %%
+'''
 # Test the spatial query with spatial index
 list = intersect_using_spatial_index(source_gdf=gdf_centroid, intersecting_gdf=buffered)
 
-
-
-
-
-
-
-
 # generate spatial index
 sindex = buffered.sindex
+'''
 
-#%%
+
+# %%
+'''
 # define empty list for results
 results_list = []
 # iterate over the points
@@ -556,12 +613,10 @@ for index, row in gdf_df.iterrows():
     results_list.append(len(precise_matches))
 # add list of results as a new column
 gdf_df['polygons'] = pd.Series(results_list)
-
-
-#%%
-
 '''
 
+# %%
+'''
 fig, ax = plt.subplots(figsize=(12,8))
 # Plot edges and nodes
 edges.plot(ax=ax, linewidth=0.75, color='gray')
@@ -595,7 +650,6 @@ def intersect_using_spatial_index(building_centroids, buffered):
     result = possible_matches.loc[possible_matches.intersects(buffered.unary_union)]
     return result
 
-
 # Count intersections by postal code area
 buildings_cnt = gpd.sjoin(buffered, building_centroids).groupby('key').size().reset_index()
 
@@ -616,24 +670,8 @@ def apply_tariff_iterrows(building_centroids):
 
 '''
 
-#%%%
-'''
-###################### ELEVATION GRADES ### not sure if this is useful eventually
-########## node elevations and edge grades
-# add node elevations from a single raster file
-raster_path = "ASTGTMV003_N28E083_dem.tif"
-network_elev = ox.elevation.add_node_elevations_raster(network_proj, raster_path)
-assert not np.isnan(np.array(network_elev.nodes(data="elevation"))[:, 1]).any()
-# add edge grades and their absolute values
-network_elev = ox.elevation.add_edge_grades(network_elev, add_absolute=True)
-# plot nodes by elevation and get one color for each node, by elevation, then plot the network
-nc = ox.plot.get_node_colors_by_attr(network_elev, "elevation", cmap="plasma")
-fig, ax = ox.plot_graph(network_elev, node_color=nc, node_size=5, edge_color="#333333", bgcolor="k")
-'''
 
-
-#%%
-
+# %%
 '''
 for col in edges.columns:
     if any(isinstance(val, list) for val in edges[col]):
@@ -643,10 +681,266 @@ for col in edges.columns:
 '''
 
 
-#%%
-# QUESTIONS
-# better to use df.loc[:,['col']] instead of df['col']?
-#
-#
-#
-join.to_file('join.shp')
+# %% get first and last point for drainage calculation
+cut_network['first'] = cut_network["geom"].apply(lambda g: g.coords[0])
+cut_network['last'] = cut_network["geom"].apply(lambda g: g.coords[-1])
+
+# %%
+cut_network['name'] = cut_network['name'].apply(lambda x: ' '.join(x))
+cut_network['osmid'] = cut_network['osmid'].astype(str)
+cut_network['first'] = cut_network['first'].astype(str)
+cut_network['last'] = cut_network['last'].astype(str)
+
+cut_network.to_file('cut_network.shp')
+
+# %%
+all_nodes.to_file('all_nodes.shp')
+
+all_edges['name'] = all_edges['name'].astype(str)
+all_edges['highway'] = all_edges['highway'].astype(str)
+all_edges['reversed'] = all_edges['reversed'].astype(str)
+all_edges['osmid'] = all_edges['osmid'].astype(str)
+
+
+'''for col in all_edges.columns:
+    if any(isinstance(val, list) for val in all_edges[col]):
+        print('Column: {0}, has a list in it'.format(col))'''
+
+
+all_edges.to_file('all_edges.shp')
+main_nodes.to_file('main_nodes.shp')
+
+
+# %% >>> MULTI-HAZARD ASSESSMENT
+# download DEM
+user = getpass.getpass(prompt='vidal92')          # Input NASA Earthdata Login Username
+password = getpass.getpass(prompt='nasaPW977')    # Input NASA Earthdata Login Password
+
+api = 'https://urs.earthdata.nasa.gov/oauth/authorize?response_type=code&client_id=OLpAZlE4HqIOMr0TYqg7UQ&redirect_uri=https%3A%2F%2Fd53njncz5taqi.cloudfront.net%2Furs_callback&state=https%3A%2F%2Fsearch.earthdata.nasa.gov%2Fsearch%2F%3Fee%3Dprod'
+token_response = r.post('{}login'.format(api), auth=(user, password)).json()  # Insert API URL, call login service, provide credentials & return json
+del user, password                                                            # Remove user and password information
+token_response                                                                # Print response
+'''
+token = token_response['token']                      # save login token to variable
+head = {'Authorization': 'Bearer {}'.format(token)}  # create header to store token information, needed to submit request
+'''
+
+
+# %%
+# grid = Grid.from_raster('C:/Users/Danny/Desktop/EMMA/IV/Data/DEM/ASTGTMV003_N28E083_dem.tif',
+#                         window_crs=all_nodes.crs,
+#                         nodata=0)
+# dem = grid.read_raster('C:/Users/Danny/Desktop/EMMA/IV/Data/DEM/ASTGTMV003_N28E083_dem.tif',
+#                         window_crs=all_nodes.crs,
+#                         nodata=0)
+
+dem_path = 'C:/Users/Danny/Downloads/ASTGTMV003_N28E083_dem.tif'
+dem_proj_tif = 'C:/Users/Danny/Downloads/ASTGTMV003_N28E083_dem_reproj.tif'
+
+with rio.open(dem_path, mode='r+') as dem:
+    transform, width, height = calculate_default_transform(
+        dem.crs, raster_crs, dem.width, dem.height, *dem.bounds)
+    kwargs = dem.meta.copy()
+    kwargs.update({
+        'crs': raster_crs,
+        'transform': transform,
+        'width': width,
+        'height': height
+    })
+
+    with rio.open(dem_proj_tif, 'w', **kwargs) as dem_proj:
+        for i in range(1, dem.count + 1):
+            reproject(
+                source=rio.band(dem, i),
+                destination=rio.band(dem_proj, i),
+                resampling=Resampling.nearest)
+
+
+# %%
+grid = Grid.from_raster(dem_proj_tif)
+dem = grid.read_raster(dem_proj_tif)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.patch.set_alpha(0)
+
+plt.imshow(dem, extent=grid.extent, cmap='terrain', zorder=1)
+plt.colorbar(label='Elevation (m)')
+plt.grid(zorder=0)
+plt.title('Digital elevation map', size=14)
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.tight_layout()
+
+
+# %%
+# Condition DEM
+# ----------------------
+# Fill pits in DEM
+pit_filled_dem = grid.fill_pits(dem)
+# Fill depressions in DEM
+flooded_dem = grid.fill_depressions(pit_filled_dem)
+# Resolve flats in DEM
+inflated_dem = grid.resolve_flats(flooded_dem)
+
+
+# %%
+# Determine D8 flow directions from DEM
+# ----------------------
+# Specify directional mapping
+dirmap = (64, 128, 1, 2, 4, 8, 16, 32)
+
+# Compute flow directions
+# -------------------------------------
+fdir = grid.flowdir(inflated_dem, dirmap=dirmap)
+
+fig = plt.figure(figsize=(8, 6))
+fig.patch.set_alpha(0)
+
+plt.imshow(fdir, extent=grid.extent, cmap='viridis', zorder=2)
+boundaries = ([0] + sorted(list(dirmap)))
+plt.colorbar(boundaries=boundaries,
+             values=sorted(dirmap))
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.title('Flow direction grid', size=14)
+plt.grid(zorder=-1)
+plt.tight_layout()
+
+
+# %%
+# Calculate flow accumulation
+# --------------------------
+acc = grid.accumulation(fdir, dirmap=dirmap)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.patch.set_alpha(0)
+plt.grid('on', zorder=0)
+im = ax.imshow(acc, extent=grid.extent, zorder=2,
+               cmap='cubehelix',
+               norm=colors.LogNorm(1, acc.max()),
+               interpolation='bilinear')
+plt.colorbar(im, ax=ax, label='Upstream Cells')
+plt.title('Flow Accumulation', size=14)
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.tight_layout()
+
+
+# %%
+# Load some sample data
+# lose a bit of resolution, but this is a fairly large file, and this is only an example.
+shape = 1000, 1000
+transform = rio.transform.from_bounds(*cut_network['geom'].total_bounds, *shape)
+rasterize_rivernet = rasterize(
+    [(shape, 1) for shape in cut_network['geom']],
+    out_shape=shape,
+    transform=transform,
+    fill=0,
+    all_touched=True,
+    dtype=rio.uint8)
+
+with rio.open(
+    'rasterized-results.tif', 'w',
+    driver='GTiff',
+    dtype=rio.uint8,
+    count=1,
+    width=shape[0],
+    height=shape[1],
+    transform=transform
+) as dst:
+    dst.write(rasterize_rivernet, indexes=1)
+    dst.crs = CRS.from_epsg(raster_crs)
+
+
+# %%
+# Read points from shapefile
+pts = all_nodes
+pts.index = range(len(pts))
+coords = [(x, y) for x, y in zip(pts.lon, pts.lat)]
+
+# Open the raster and store metadata
+src = rio.open(dem_path)
+
+# Sample the raster at every point location and store values in DataFrame
+pts['raster_value'] = [x[0] for x in src.sample(coords)]
+
+lowest_point = pts.nsmallest(1, 'raster_value')
+
+
+# %%
+x = float(lowest_point['lon'])
+y = float(lowest_point['lat'])
+
+# Snap pour point to high accumulation cell
+x_snap, y_snap = grid.snap_to_mask(acc > 1000, (x, y))
+
+# Delineate the catchment
+catch = grid.catchment(x=x_snap, y=y_snap, fdir=fdir, xytype='coordinate')
+
+# Plot the result
+grid.clip_to(catch)
+catch_view = grid.view(catch)
+
+# Plot the catchment
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.patch.set_alpha(0)
+
+plt.grid('on', zorder=0)
+im = ax.imshow(np.where(catch_view, catch_view, np.nan), extent=grid.extent,
+               zorder=1, cmap='Greys_r')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.title('Delineated Catchment', size=14)
+
+
+# %%
+# Extract river network
+branches = grid.extract_river_network(fdir, acc > 100)
+
+sns.set_palette('husl')
+fig, ax = plt.subplots(figsize=(8.5, 6.5))
+
+plt.xlim(grid.bbox[0], grid.bbox[2])
+plt.ylim(grid.bbox[1], grid.bbox[3])
+ax.set_aspect('equal')
+
+for branch in branches['features']:
+    line = np.asarray(branch['geometry']['coordinates'])
+    plt.plot(line[:, 0], line[:, 1])
+
+_ = plt.title('Channel network (>100 accumulation)', size=14)
+
+
+# %% check significance of HAND
+# Compute height above nearest drainage
+hand = grid.compute_hand(fdir, dem, acc > 200)
+# Create a view of HAND in the catchment
+hand_view = grid.view(hand, nodata=np.nan)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.patch.set_alpha(0)
+plt.imshow(hand_view,
+           extent=grid.extent, cmap='terrain', zorder=1)
+plt.colorbar(label='Height above nearest drainage (m)')
+plt.grid(zorder=0)
+plt.title('HAND', size=14)
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.tight_layout()
+
+
+# %%
+# Estimating inundation extent (constant channel depth)
+inundation_extent = np.where(hand_view < 3, 3 - hand_view, np.nan)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.patch.set_alpha(0)
+dem_view = grid.view(dem, nodata=np.nan)
+plt.imshow(dem_view, extent=grid.extent, cmap='Greys', zorder=1)
+plt.imshow(inundation_extent, extent=grid.extent,
+           cmap='Blues', vmin=-5, vmax=10, zorder=2)
+plt.grid(zorder=0)
+plt.title('Inundation depths (constant channel depth)', size=14)
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.tight_layout()
