@@ -22,6 +22,7 @@ from shapely import speedups
 from shapely.geometry import Point, LineString
 import pycountry
 from wpgpDownload.utils.wpcsv import Product
+from wpgpDownload.utils.convenience_functions import download_country_covariates as dl
 import requests
 import matplotlib.pyplot as plt
 from matplotlib import colors
@@ -286,7 +287,7 @@ products = Product(iso_code)  # Where instead of NPL it could be any valid ISO c
 
 prod_name_input = "ppp_2020" + population_type
 
-# dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
+dl(ISO=iso_code, out_folder=download_path, prod_name=prod_name_input)
 
 
 # %% define boundaries to mask raster
