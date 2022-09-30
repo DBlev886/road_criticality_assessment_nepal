@@ -554,13 +554,9 @@ cut_network['socioeconomic_score'] = pd.cut(cut_network['li_sum'], bins=evaluati
 
 
 # %%
-<<<<<<< HEAD
 
 cut_network['osmid'] = cut_network['osmid'].astype(str)
 cut_network['name'] = cut_network['name'].astype(str)
-=======
-cut_network = cut_network.drop_duplicates(subset=['ID'], keep="first")
->>>>>>> f5a9632 (finishing socio-economic assessment)
 cut_network.to_file('cut_network.shp')
 
 
