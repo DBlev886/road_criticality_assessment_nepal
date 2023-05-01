@@ -1,5 +1,4 @@
-download input files here and change the paths accordingly
-copy landcover_reproj immediately after start running the script to the newly created "temporary" folder 
+download input files  and change the paths accordingly
 
-https://we.tl/t-6kophkExEJ + 
-https://we.tl/t-3fAMUI0BcV
+https://we.tl/t-cpmOA1KG0C + 
+https://we.tl/t-sRTANZNYJP
